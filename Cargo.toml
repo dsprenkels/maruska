@@ -1,0 +1,9 @@
+[package]
+name = "maruska"
+version = "0.1.0"
+authors = ["Daan Sprenkels <dsprenkels@gmail.com>"]
+
+[dependencies]
+hyper = "0.7"
+ncurses = "5.73"
+rustc-serialize = "0.3"
