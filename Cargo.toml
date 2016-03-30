@@ -7,3 +7,4 @@ authors = ["Daan Sprenkels <dsprenkels@gmail.com>"]
 hyper = "0.7"
 ncurses = "5.73"
 rustc-serialize = "0.3"
+time = "0.1"

@@ -1,13 +1,33 @@
 use std::collections::BTreeMap;
 use std::sync::mpsc::{channel, Receiver, Sender};
+
 use rustc_serialize::json::{Json, ToJson};
+use time;
 
 use comet::{CometChannel, CometError, serve as comet_serve};
+use media::Media;
+
+struct Playing {
+    end_time: time::Timespec,
+    media: Media
+}
+
 
 struct Client {
+    // The wrapped comet channel
     comet: CometChannel,
+
+    // The Sender used to send messages to the remote server through the comet channel
     send_message_tx: Sender<Json>,
+
+    // The Receiver used to receive messages from the remote server
     recv_message_rx: Receiver<Json>,
+
+    // What is currently playing
+    playing: Option<Playing>,
+
+    // Some login token acquired from the remote server
+    login_token: Option<String>,
 }
 
 impl Client {
@@ -18,39 +38,44 @@ impl Client {
             comet: CometChannel::new(&url, send_message_rx, recv_message_tx).unwrap(),
             send_message_tx: send_message_tx,
             recv_message_rx: recv_message_rx,
+            playing: None,
+            login_token: None
         }
     }
 
-    fn handle_message(&mut self, msg_contents: &Json) -> Result<(), CometError> {
-        let msgtype = try!(Some(msg_contents)
-            .and_then(|x| x.as_array())
-            .and_then(|x| x.get(0))
+    fn handle_message(&mut self, msg: &Json) -> Result<(), CometError> {
+        let msg_type = try!(Some(msg)
             .and_then(|x| x.as_object())
             .and_then(|x| x.get("type"))
             .and_then(|x| x.as_string())
-            .ok_or_else(|| CometError::MalformedResponse(("found no msg type", msg_contents.clone())))
+            .ok_or_else(|| CometError::MalformedResponse(("found no msg type", msg.clone())))
         );
-        match &msgtype {
+        match &msg_type {
             &"welcome" => Ok(()),
-            &"playing" => self.handle_playing(msg_contents),
-            &"requests" => self.handle_requests(msg_contents),
-            &"login_token" => self.handle_login_token(msg_contents),
-            &_ => panic!("unhandled message type {}", msgtype)
+            &"playing" => self.handle_playing(msg),
+            &"requests" => self.handle_requests(msg),
+            &"login_token" => self.handle_login_token(msg),
+            &_ => panic!("unhandled message type {}", msg_type)
         }
     }
 
-    fn handle_playing(&mut self, msg_content: &Json) -> Result<(), CometError> {
-        println!("now playing: {}", msg_content);
+    fn handle_playing(&mut self, msg: &Json) -> Result<(), CometError> {
+        println!("now playing: {}", msg);
         Ok(())
     }
 
-    fn handle_requests(&mut self, msg_content: &Json) -> Result<(), CometError> {
-        println!("current requests: {}", msg_content);
+    fn handle_requests(&mut self, msg: &Json) -> Result<(), CometError> {
+        println!("current requests: {}", msg);
         Ok(())
     }
 
-    fn handle_login_token(&mut self, msg_content: &Json) -> Result<(), CometError> {
-        println!("got login token: {}", msg_content);
+    fn handle_login_token(&mut self, msg: &Json) -> Result<(), CometError> {
+        let login_token = try!(msg.as_object()
+            .and_then(|x| x.get("login_token"))
+            .and_then(|x| x.as_string())
+            .ok_or_else(|| CometError::MalformedResponse(("found no login_token string", msg.clone())))
+        );
+        self.login_token = Some(login_token.to_string());
         Ok(())
     }
 
@@ -77,6 +102,6 @@ pub fn it_works() {
     comet_serve(&client.comet).unwrap();
     loop {
         let message = client.recv_message_rx.recv().unwrap();
-
+        client.handle_message(&message).unwrap();
     }
 }

@@ -1,9 +1,11 @@
 extern crate hyper;
 extern crate ncurses;
 extern crate rustc_serialize;
+extern crate time;
 
 mod client;
 mod comet;
+mod media;
 
 use std::char;
 use client::it_works;
