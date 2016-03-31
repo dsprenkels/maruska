@@ -1,16 +1,10 @@
 use std::collections::BTreeMap;
 use std::sync::mpsc::{channel, Receiver, Sender};
 
-use rustc_serialize::json::{Json, ToJson};
-use time;
+use rustc_serialize::json::{decode, Json, ToJson};
 
 use comet::{CometChannel, CometError, serve as comet_serve};
-use media::Media;
-
-struct Playing {
-    end_time: time::Timespec,
-    media: Media
-}
+use media::{Playing, Request};
 
 
 struct Client {
@@ -26,6 +20,9 @@ struct Client {
     // What is currently playing
     playing: Option<Playing>,
 
+    // What the current requests are
+    requests: Option<Vec<Request>>,
+
     // Some login token acquired from the remote server
     login_token: Option<String>,
 }
@@ -39,6 +36,7 @@ impl Client {
             send_message_tx: send_message_tx,
             recv_message_rx: recv_message_rx,
             playing: None,
+            requests: None,
             login_token: None
         }
     }
@@ -60,12 +58,27 @@ impl Client {
     }
 
     fn handle_playing(&mut self, msg: &Json) -> Result<(), CometError> {
-        println!("now playing: {}", msg);
+        let playing = try!(msg.as_object()
+            .and_then(|x| x.get("playing"))
+            .ok_or_else(|| CometError::MalformedResponse(("found no playing object", msg.clone())))
+            .map(|x| decode(&format!("{}", x)))
+        );
+        self.playing = Some(playing.unwrap());
         Ok(())
     }
 
     fn handle_requests(&mut self, msg: &Json) -> Result<(), CometError> {
-        println!("current requests: {}", msg);
+        let requests_array = try!(msg.as_object()
+            .and_then(|x| x.get("requests"))
+            .and_then(|x| x.as_array())
+            .ok_or_else(|| CometError::MalformedResponse(("found no requests array", msg.clone())))
+        );
+        let mut requests = Vec::with_capacity(requests_array.len());
+        for x in requests_array.iter() {
+            requests.push(decode::<Request>(&format!("{}", x)).unwrap());
+        }
+        self.requests = Some(requests);
+
         Ok(())
     }
 
