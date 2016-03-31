@@ -47,7 +47,7 @@ impl Decodable for Media {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Playing {
-    queued_by: Option<String>,
+    requested_by: Option<String>,
     end_time: Timespec,
     media: Media
 }
@@ -57,13 +57,13 @@ impl Decodable for Playing {
         d.read_map(|d, len| {
             let mut end_time = Err(d.error("no endTime field"));
             let mut media = Err(d.error("no media object"));
-            let mut queued_by = Err(d.error("no byKey field "));
+            let mut requested_by = Err(d.error("no byKey field "));
             let mut server_time = Err(d.error("no serverTime field"));
             for idx in 0..len {
                 let key = try!(d.read_map_elt_key(idx, |d| d.read_str()));
                 try!(d.read_map_elt_val(idx, |d| {
                     match &key[..] {
-                        "byKey" => queued_by = Decodable::decode(d),
+                        "byKey" => requested_by = Decodable::decode(d),
                         "endTime" => end_time = decode_timespec(d),
                         "media" => media = Decodable::decode(d),
                         "serverTime" => server_time = decode_timespec(d),
@@ -76,7 +76,7 @@ impl Decodable for Playing {
             Ok(Playing {
                 end_time: try!(end_time),
                 media: try!(media),
-                queued_by: try!(queued_by),
+                requested_by: try!(requested_by),
             })
         })
     }
@@ -85,7 +85,7 @@ impl Decodable for Playing {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Request {
-    queued_by: Option<String>,
+    by: Option<String>,
     key: i64,
     media: Media,
 }
@@ -93,15 +93,15 @@ pub struct Request {
 impl Decodable for Request {
     fn decode<D: Decoder>(d: &mut D) -> Result<Self, D::Error> {
         d.read_map(|d, len| {
-            let mut queued_by = Err(d.error("no byKey field"));
-            let mut queued_key = Err(d.error("no key field"));
+            let mut requested_by = Err(d.error("no byKey field"));
+            let mut requested_key = Err(d.error("no key field"));
             let mut media = Err(d.error("no media object "));
             for idx in 0..len {
                 let key = try!(d.read_map_elt_key(idx, |d| d.read_str()));
                 try!(d.read_map_elt_val(idx, |d| {
                     match &key[..] {
-                        "byKey" => queued_by = Decodable::decode(d),
-                        "key" => queued_key = Decodable::decode(d),
+                        "byKey" => requested_by = Decodable::decode(d),
+                        "key" => requested_key = Decodable::decode(d),
                         "media" => media = Decodable::decode(d),
                         _ => {} // ignore
                     }
@@ -109,8 +109,8 @@ impl Decodable for Request {
                 }))
             }
             Ok(Request {
-                queued_by: try!(queued_by),
-                key: try!(queued_key),
+                by: try!(requested_by),
+                key: try!(requested_key),
                 media: try!(media),
             })
         })
@@ -131,6 +131,32 @@ mod tests {
     use time::{Duration, Timespec};
     use super::*;
 
+    fn expected_media() -> Media {
+        Media {
+            artist: String::from("Queens Of The Stone Age"),
+            key: String::from("56bafc2c8dc01b4ea67fad9c"),
+            length: Duration::seconds(231),
+            title: String::from("In the Fade"),
+            uploaded_by: String::from("dsprenkels"),
+        }
+    }
+
+    fn expected_playing() -> Playing {
+        Playing {
+            end_time: Timespec::new(1459420207, 0),
+            requested_by: Some(String::from("bkoks")),
+            media: expected_media(),
+        }
+    }
+
+    fn expected_request() -> Request {
+        Request {
+            by: Some(String::from("bkoks")),
+            key: 3,
+            media: expected_media(),
+        }
+    }
+
     #[test]
     fn decode_media() {
         let input = r#"
@@ -142,14 +168,7 @@ mod tests {
                "uploadedByKey":"dsprenkels"
             }
         "#;
-        let expected = Media {
-            artist: String::from("Queens Of The Stone Age"),
-            key: String::from("56bafc2c8dc01b4ea67fad9c"),
-            length: Duration::seconds(231),
-            title: String::from("In the Fade"),
-            uploaded_by: String::from("dsprenkels"),
-        };
-        assert_eq!(json_decode::<Media>(input).unwrap(), expected);
+        assert_eq!(json_decode::<Media>(input).unwrap(), expected_media());
     }
 
     #[test]
@@ -168,21 +187,29 @@ mod tests {
               "serverTime":1459419970.4571419
             }
         "#;
-        let expected_media = Media {
-            artist: String::from("Queens Of The Stone Age"),
-            key: String::from("56bafc2c8dc01b4ea67fad9c"),
-            length: Duration::seconds(231),
-            title: String::from("In the Fade"),
-            uploaded_by: String::from("dsprenkels"),
-        };
-        let expected = Playing {
-            end_time: Timespec::new(1459420207, 0),
-            queued_by: Some(String::from("bkoks")),
-            media: expected_media,
-        };
+        let expected = expected_playing();
         let got = json_decode::<Playing>(input).unwrap();
-        assert_eq!(got.queued_by, expected.queued_by);
+        assert_eq!(got.requested_by, expected.requested_by);
         assert_eq!(got.media, expected.media);
     }
 
+    #[test]
+    fn decode_request() {
+        let input = r#"
+            {
+              "byKey":"bkoks",
+              "key":3,
+              "media":{
+                "artist":"Queens Of The Stone Age",
+                "key":"56bafc2c8dc01b4ea67fad9c",
+                "length":231,
+                "title":"In the Fade",
+                "uploadedByKey":"dsprenkels"
+              }
+            }
+        "#;
+        let expected = expected_request();
+        let got = json_decode::<Request>(input).unwrap();
+        assert_eq!(got, expected);
+    }
 }
