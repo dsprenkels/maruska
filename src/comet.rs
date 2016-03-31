@@ -204,10 +204,9 @@ pub fn serve(shared_comet: &CometChannel) -> Result<(), IOError> {
         panic!("I cannot serve when I'm not connected!")
     }
 
-    for i in 0..2 {
+    for _ in 0..2 {
         let mut local_comet = shared_comet.clone();
-        try!(thread::Builder::new().name(format!("http{}", i))
-                              .spawn(move || -> Result<(), CometError> {
+        thread::spawn(move || -> Result<(), CometError> {
             loop {
                 let result = local_comet.try_handle_send_message();
 
@@ -215,7 +214,7 @@ pub fn serve(shared_comet: &CometChannel) -> Result<(), IOError> {
                     Err(err) => panic!(err),
                     Ok(true) => continue,
                     Ok(false) => {
-                        // do we need to send a pull request?
+                        // do we need to send a long poll request?
                         if {
                             let current_requests = local_comet.current_requests.clone();
                             let mut x = current_requests.lock().unwrap();
@@ -235,7 +234,7 @@ pub fn serve(shared_comet: &CometChannel) -> Result<(), IOError> {
                     }
                 }
             }
-        }));
+        });
     }
     Ok(())
 }
