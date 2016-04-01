@@ -4,11 +4,11 @@ use time::{Duration, Timespec, get_time};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Media {
-    key: String,
-    artist: String,
-    title: String,
-    length: Duration,
-    uploaded_by: String,
+    pub key: String,
+    pub artist: String,
+    pub title: String,
+    pub length: Duration,
+    pub uploaded_by: String,
 }
 
 impl Decodable for Media {
@@ -47,9 +47,9 @@ impl Decodable for Media {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Playing {
-    requested_by: Option<String>,
-    end_time: Timespec,
-    media: Media
+    pub requested_by: Option<String>,
+    pub end_time: Timespec,
+    pub media: Media
 }
 
 impl Decodable for Playing {
@@ -85,9 +85,9 @@ impl Decodable for Playing {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Request {
-    by: Option<String>,
-    key: i64,
-    media: Media,
+    pub by: Option<String>,
+    pub key: i64,
+    pub media: Media,
 }
 
 impl Decodable for Request {

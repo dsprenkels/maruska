@@ -68,8 +68,8 @@ pub struct Client {
     // Are we waiting for a login response?
     waiting_for_login: bool,
 
-    // This is Some((username, secret, using_access_key)) if the client should login, but does not have a
-    // login_token at this moment
+    // This is Some((username, secret, using_access_key)) if the client should login,
+    // but does not have a login_token at this moment
     deferred_login: Option<(String, String, bool)>,
 
     // The current search query results
@@ -81,10 +81,14 @@ pub struct Client {
     // The current query_media token, so that we will know if the results match the last query
     qm_token: u64,
 
+    // The amount of results we want to have for this query
     qm_results_count: usize,
 
     // Are we currently waiting for query results?
     waiting_for_qm_results: bool,
+
+    // This is a list of all messages that should be sent after we are logged in
+    deferred_after_login: Vec<Json>,
 }
 
 impl Client {
@@ -107,7 +111,21 @@ impl Client {
             qm_query: None,
             qm_token: 0,
             qm_results_count: 0,
-            waiting_for_qm_results: false
+            waiting_for_qm_results: false,
+            deferred_after_login: Vec::new()
+        }
+    }
+
+    fn send_message<T: ToJson>(&mut self, obj: &T) -> Result<(), ClientError> {
+        self.send_message_tx.send(obj.to_json()).map_err(|x| ClientError::from(CometError::from(x)))
+    }
+
+    fn send_message_after_login<T: ToJson>(&mut self, obj: &T) -> Result<(), ClientError> {
+        if self.logged_in {
+            self.send_message(obj)
+        } else {
+            self.deferred_after_login.push(obj.to_json());
+            Ok(())
         }
     }
 
@@ -182,6 +200,15 @@ impl Client {
         for callback in self.access_key_callback.iter() {
             callback(access_key);
         }
+
+        let mut messages = Vec::with_capacity(self.deferred_after_login.len());
+        messages.append(&mut self.deferred_after_login);
+        for message in messages {
+            if let Err(err) = self.send_message(&message) {
+                return Err(err);
+            }
+        }
+        self.deferred_after_login.clear();
         Ok(())
     }
 
@@ -225,7 +252,7 @@ impl Client {
     pub fn request_login_token(&mut self) -> Result<(), ClientError> {
         let b = make_json_btreemap!("type" => "request_login_token");
         self.waiting_for_login_token = true;
-        self.send_message_tx.send(b.to_json()).map_err(|x| ClientError::from(CometError::from(x)))
+        self.send_message(&b)
     }
 
     fn do_login(&mut self, username: &str, password: &str) -> Result<(), ClientError> {
@@ -295,7 +322,19 @@ impl Client {
             "count" => count
         );
         self.waiting_for_qm_results = true;
-        self.send_message_tx.send(b.to_json()).map_err(|x| ClientError::from(CometError::from(x)))
+        self.send_message(&b)
+    }
+
+    pub fn do_request(&mut self, media: &Media) -> Result<(), ClientError> {
+        self.do_request_from_key(&media.key)
+    }
+
+    pub fn do_request_from_key(&mut self, key: &str) -> Result<(), ClientError> {
+        let b = make_json_btreemap!(
+            "type" => "request",
+            "mediaKey" => key
+        );
+        self.send_message_after_login(&b)
     }
 }
 
@@ -312,9 +351,7 @@ fn md5(p: &str) -> String {
 pub fn it_works() {
     // let mut client = Client::new("http://192.168.1.100/api");
     let mut client = Client::new("http://noordslet.science.ru.nl/api");
-    client.query_media("", 500);
     client.follow().unwrap();
-
 
     comet_serve(&client.channel).unwrap();
     loop {
