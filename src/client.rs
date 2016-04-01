@@ -7,9 +7,17 @@ use rustc_serialize::json::{decode, Json, ToJson};
 use comet::{CometChannel, CometError, serve as comet_serve};
 use media::{Media, Playing, Request};
 
-
 const MD5_HASH_LENGTH: usize = 32;
 
+macro_rules! make_json_btreemap {
+    ( $( $key:expr => $val:expr ),* ) => {{
+        let mut b = BTreeMap::new();
+        $(
+            b.insert(String::from($key), $val.to_json());
+        )*
+        b
+    }}
+}
 
 #[derive(Debug)]
 pub enum ClientError {
@@ -207,15 +215,15 @@ impl Client {
     }
 
     pub fn follow(&mut self) -> Result<(), ClientError> {
-        let mut b = BTreeMap::new();
-        b.insert("type".to_string(), "follow".to_json());
-        b.insert("which".to_string(), vec!("playing".to_string(), "requests".to_string()).to_json());
+        let b = make_json_btreemap!(
+            "type" => "follow",
+            "which" => vec!("playing".to_string(), "requests".to_string())
+        );
         self.send_message_tx.send(b.to_json()).map_err(|x| ClientError::from(CometError::from(x)))
     }
 
     pub fn request_login_token(&mut self) -> Result<(), ClientError> {
-        let mut b = BTreeMap::new();
-        b.insert("type".to_string(), "request_login_token".to_json());
+        let b = make_json_btreemap!("type" => "request_login_token");
         self.waiting_for_login_token = true;
         self.send_message_tx.send(b.to_json()).map_err(|x| ClientError::from(CometError::from(x)))
     }
@@ -241,10 +249,11 @@ impl Client {
                 true => md5(&format!("{}{}", secret, login_token)),
                 false => md5(&format!("{}{}", md5(secret), login_token))
             };
-            let mut b = BTreeMap::new();
-            b.insert(String::from("type"), message_type.to_json());
-            b.insert(String::from("username"), username.to_json());
-            b.insert(String::from("hash"), hash.to_json());
+            let b = make_json_btreemap!(
+                "type" => message_type,
+                "username" => username,
+                "hash" => hash
+            );
             self.waiting_for_login = true;
             self.send_message_tx.send(b.to_json()).map_err(|x| ClientError::from(CometError::from(x)))
         } else {
@@ -278,12 +287,13 @@ impl Client {
         // results, we do them in subsequent requests.
         let count = min(self.qm_results_count - skip, 100);
 
-        let mut b = BTreeMap::new();
-        b.insert(String::from("type"), "query_media".to_json());
-        b.insert(String::from("query"), self.qm_query.to_json());
-        b.insert(String::from("token"), self.qm_token.to_json());
-        b.insert(String::from("skip"), skip.to_json());
-        b.insert(String::from("count"), count.to_json());
+        let b = make_json_btreemap!(
+            "type" => "query_media",
+            "query" => self.qm_query,
+            "token" => self.qm_token,
+            "skip" => skip,
+            "count" => count
+        );
         self.waiting_for_qm_results = true;
         self.send_message_tx.send(b.to_json()).map_err(|x| ClientError::from(CometError::from(x)))
     }
