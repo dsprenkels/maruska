@@ -20,7 +20,7 @@ pub enum CometError {
 
 impl fmt::Display for CometError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "comet error")
+        write!(f, "comet error: ({})", self)
     }
 }
 
@@ -103,6 +103,7 @@ impl CometChannel {
                                       .body(&msg.to_string())
                                       .send());
         let decoded = try!(Json::from_reader(&mut res));
+        trace!("received packet: {}", decoded);
         self.handle_receive_packet(decoded)
     }
 
@@ -143,7 +144,9 @@ impl CometChannel {
             packet.push(message.to_json());
         }
 
-        self.send(packet.to_json())
+        let json = packet.to_json();
+        trace!("sending packet: {}", json);
+        self.send(json)
     }
 
     pub fn connect(&mut self) -> Result<(), CometError> {
@@ -152,6 +155,7 @@ impl CometChannel {
             assert_eq!(*x, 0); // something has already been sent
             assert_eq!(*self.session_id.read().unwrap(), None); // already connected
         }
+        info!("Connecting to {}", self.url);
         self.send([(); 0].to_json())
     }
 

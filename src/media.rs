@@ -1,6 +1,7 @@
 use rustc_serialize::{Decodable, Decoder};
 use time::{Duration, Timespec, get_time};
 
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Media {
     key: String,
@@ -25,8 +26,7 @@ impl Decodable for Media {
                         "key" => media_key = Decodable::decode(d),
                         "artist" => artist = Decodable::decode(d),
                         "title" => title = Decodable::decode(d),
-                        "length" => length = Decodable::decode(d)
-                            .map(|x| Duration::seconds(x)),
+                        "length" => length = decode_duration(d),
                         "uploadedByKey" => uploaded_by = d.read_str(),
                         _ => {} // ignore
                     }
@@ -120,8 +120,27 @@ impl Decodable for Request {
 
 fn decode_timespec<D: Decoder>(d: &mut D) -> Result<Timespec, D::Error> {
     Decodable::decode(d)
-        .map(|x: f64| Timespec::new(x.floor() as i64,
-             ((x%1_f64) * 10_f64.powi(6)).floor() as i32))
+        .map(|x: f64| {
+            if x.is_nan() {
+                // got an invalid time value from the server, just return 0?
+                Timespec::new(0, 0)
+            } else {
+                Timespec::new(x.floor() as i64,
+                              ((x%1_f64) * 10_f64.powi(6)).floor() as i32)
+            }
+        })
+}
+
+fn decode_duration<D: Decoder>(d: &mut D) -> Result<Duration, D::Error> {
+    Decodable::decode(d)
+        .map(|x: f64| {
+            if x.is_nan() {
+                // got an invalid time value from the server, just return 0?
+                Duration::zero()
+            } else {
+                Duration::nanoseconds(((x%1_f64) * 10_f64.powi(6)) as i64)
+            }
+        })
 }
 
 

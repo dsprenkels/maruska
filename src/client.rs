@@ -1,10 +1,29 @@
 use std::collections::BTreeMap;
 use std::sync::mpsc::{channel, Receiver, Sender};
+use std::fmt;
 
 use rustc_serialize::json::{decode, Json, ToJson};
 
 use comet::{CometChannel, CometError, serve as comet_serve};
 use media::{Playing, Request};
+
+
+#[derive(Debug)]
+enum ClientError {
+    Comet(CometError)
+}
+
+impl fmt::Display for ClientError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "client error: ({})", self)
+    }
+}
+
+impl From<CometError> for ClientError {
+    fn from(err: CometError) -> ClientError {
+        ClientError::Comet(err)
+    }
+}
 
 
 struct Client {
@@ -41,7 +60,7 @@ impl Client {
         }
     }
 
-    fn handle_message(&mut self, msg: &Json) -> Result<(), CometError> {
+    fn handle_message(&mut self, msg: &Json) -> Result<(), ClientError> {
         let msg_type = try!(Some(msg)
             .and_then(|x| x.as_object())
             .and_then(|x| x.get("type"))
@@ -57,17 +76,18 @@ impl Client {
         }
     }
 
-    fn handle_playing(&mut self, msg: &Json) -> Result<(), CometError> {
+    fn handle_playing(&mut self, msg: &Json) -> Result<(), ClientError> {
         let playing = try!(msg.as_object()
             .and_then(|x| x.get("playing"))
             .ok_or_else(|| CometError::MalformedResponse(("found no playing object", msg.clone())))
             .map(|x| decode(&format!("{}", x)))
         );
         self.playing = Some(playing.unwrap());
+        debug!("currently playing: {:?}", self.playing);
         Ok(())
     }
 
-    fn handle_requests(&mut self, msg: &Json) -> Result<(), CometError> {
+    fn handle_requests(&mut self, msg: &Json) -> Result<(), ClientError> {
         let requests_array = try!(msg.as_object()
             .and_then(|x| x.get("requests"))
             .and_then(|x| x.as_array())
@@ -78,32 +98,37 @@ impl Client {
             requests.push(decode::<Request>(&format!("{}", x)).unwrap());
         }
         self.requests = Some(requests);
-
+        debug!("current requests: {:?}", self.requests);
         Ok(())
     }
 
-    fn handle_login_token(&mut self, msg: &Json) -> Result<(), CometError> {
+    fn handle_login_token(&mut self, msg: &Json) -> Result<(), ClientError> {
         let login_token = try!(msg.as_object()
             .and_then(|x| x.get("login_token"))
             .and_then(|x| x.as_string())
             .ok_or_else(|| CometError::MalformedResponse(("found no login_token string", msg.clone())))
         );
         self.login_token = Some(login_token.to_string());
+        debug!("current login_token: {:?}", self.login_token);
         Ok(())
     }
 
-    fn follow(&mut self) -> Result<(), CometError> {
+    fn follow(&mut self) -> Result<(), ClientError> {
         let mut b = BTreeMap::new();
         b.insert("type".to_string(), "follow".to_json());
         b.insert("which".to_string(), vec!("playing".to_string(), "requests".to_string()).to_json());
-        self.send_message_tx.send(b.to_json()).map_err(|x| CometError::from(x))
+        self.send_message_tx.send(b.to_json()).map_err(|x| ClientError::from(CometError::from(x)))
     }
 
-    fn request_login_token(&mut self) -> Result<(), CometError> {
+    fn request_login_token(&mut self) -> Result<(), ClientError> {
         let mut b = BTreeMap::new();
         b.insert("type".to_string(), "request_login_token".to_json());
-        self.send_message_tx.send(b.to_json()).map_err(|x| CometError::from(x))
+        self.send_message_tx.send(b.to_json()).map_err(|x| ClientError::from(CometError::from(x)))
     }
+
+    // fn do_login(&mut self) -> Result<(), ClientError> {
+    //
+    // }
 }
 
 

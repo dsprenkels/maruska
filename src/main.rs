@@ -1,3 +1,5 @@
+#[macro_use] extern crate log;
+extern crate env_logger;
 extern crate hyper;
 extern crate ncurses;
 extern crate rustc_serialize;
@@ -117,7 +119,12 @@ impl Drop for App {
 }
 
 fn main() {
-    // initialise locale (best guess)
+    // initialize logger
+    if let Err(err) = env_logger::init() {
+        panic!("Failed to initialize logger: {}", err);
+    }
+
+    // initialize locale (best guess)
     let locale_conf = ncurses::LcCategory::all;
     ncurses::setlocale(locale_conf, "");
 
