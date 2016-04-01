@@ -138,7 +138,7 @@ fn decode_duration<D: Decoder>(d: &mut D) -> Result<Duration, D::Error> {
                 // got an invalid time value from the server, just return 0?
                 Duration::zero()
             } else {
-                Duration::nanoseconds(((x%1_f64) * 10_f64.powi(6)) as i64)
+                Duration::nanoseconds((x*10_f64.powi(9)) as i64)
             }
         })
 }

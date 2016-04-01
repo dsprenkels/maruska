@@ -8,8 +8,11 @@ use comet::{CometChannel, CometError, serve as comet_serve};
 use media::{Playing, Request};
 
 
+const MD5_HASH_LENGTH: usize = 32;
+
+
 #[derive(Debug)]
-enum ClientError {
+pub enum ClientError {
     Comet(CometError)
 }
 
@@ -26,9 +29,9 @@ impl From<CometError> for ClientError {
 }
 
 
-struct Client {
+pub struct Client {
     // The wrapped comet channel
-    comet: CometChannel,
+    channel: CometChannel,
 
     // The Sender used to send messages to the remote server through the comet channel
     send_message_tx: Sender<Json>,
@@ -42,8 +45,24 @@ struct Client {
     // What the current requests are
     requests: Option<Vec<Request>>,
 
+    // When we get an access key, call the following callbacks (if present)
+    access_key_callback: Option<Box<Fn(&str) -> ()>>,
+
     // Some login token acquired from the remote server
     login_token: Option<String>,
+
+    // Are we currently logged in?
+    logged_in: bool,
+
+    // Are we waiting for a login token?
+    waiting_for_login_token: bool,
+
+    // Are we waiting for a login response?
+    waiting_for_login: bool,
+
+    // This is Some((username, secret, using_access_key)) if the client should login, but does not have a
+    // login_token at this moment
+    deferred_login: Option<(String, String, bool)>,
 }
 
 impl Client {
@@ -51,12 +70,17 @@ impl Client {
         let (send_message_tx, send_message_rx) = channel();
         let (recv_message_tx, recv_message_rx) = channel();
         Client {
-            comet: CometChannel::new(&url, send_message_rx, recv_message_tx).unwrap(),
+            channel: CometChannel::new(&url, send_message_rx, recv_message_tx).unwrap(),
             send_message_tx: send_message_tx,
             recv_message_rx: recv_message_rx,
             playing: None,
             requests: None,
-            login_token: None
+            access_key_callback: None,
+            login_token: None,
+            logged_in: false,
+            waiting_for_login_token: false,
+            waiting_for_login: false,
+            deferred_login: None
         }
     }
 
@@ -72,6 +96,7 @@ impl Client {
             &"playing" => self.handle_playing(msg),
             &"requests" => self.handle_requests(msg),
             &"login_token" => self.handle_login_token(msg),
+            &"logged_in" => self.handle_logged_in(msg),
             &_ => panic!("unhandled message type {}", msg_type)
         }
     }
@@ -108,36 +133,100 @@ impl Client {
             .and_then(|x| x.as_string())
             .ok_or_else(|| CometError::MalformedResponse(("found no login_token string", msg.clone())))
         );
-        self.login_token = Some(login_token.to_string());
+        self.login_token = Some(String::from(login_token));
+        self.waiting_for_login_token = false;
         debug!("current login_token: {:?}", self.login_token);
+        if let Some((ref username, ref secret, using_access_key)) = self.deferred_login.clone() {
+            self.do_login_inner(username, secret, using_access_key)
+        } else {
+            Ok(())
+        }
+    }
+
+    pub fn handle_logged_in(&mut self, msg: &Json) -> Result<(), ClientError> {
+        let access_key = try!(msg.as_object()
+            .and_then(|x| x.get("accessKey"))
+            .and_then(|x| x.as_string())
+            .ok_or_else(|| CometError::MalformedResponse(("found no accessKey string", msg.clone())))
+        );
+        self.waiting_for_login = false;
+        self.logged_in = true;
+        for callback in self.access_key_callback.iter() {
+            callback(access_key);
+        }
         Ok(())
     }
 
-    fn follow(&mut self) -> Result<(), ClientError> {
+    pub fn follow(&mut self) -> Result<(), ClientError> {
         let mut b = BTreeMap::new();
         b.insert("type".to_string(), "follow".to_json());
         b.insert("which".to_string(), vec!("playing".to_string(), "requests".to_string()).to_json());
         self.send_message_tx.send(b.to_json()).map_err(|x| ClientError::from(CometError::from(x)))
     }
 
-    fn request_login_token(&mut self) -> Result<(), ClientError> {
+    pub fn request_login_token(&mut self) -> Result<(), ClientError> {
         let mut b = BTreeMap::new();
         b.insert("type".to_string(), "request_login_token".to_json());
+        self.waiting_for_login_token = true;
         self.send_message_tx.send(b.to_json()).map_err(|x| ClientError::from(CometError::from(x)))
     }
 
-    // fn do_login(&mut self) -> Result<(), ClientError> {
-    //
-    // }
+    pub fn do_login_inner(&mut self, username: &str, secret: &str, using_access_key: bool) -> Result<(), ClientError> {
+        if let Some(ref login_token) = self.login_token {
+            self.deferred_login = None;
+            let message_type = match using_access_key {
+                true => "login_accessKey",
+                false => "login"
+            };
+            let hash = match using_access_key {
+                true => md5(&format!("{}{}", secret, login_token)),
+                false => md5(&format!("{}{}", md5(secret), login_token))
+            };
+            let mut b = BTreeMap::new();
+            b.insert(String::from("type"), message_type.to_json());
+            b.insert(String::from("username"), username.to_json());
+            b.insert(String::from("hash"), hash.to_json());
+            self.waiting_for_login = true;
+            self.send_message_tx.send(b.to_json()).map_err(|x| ClientError::from(CometError::from(x)))
+        } else {
+            self.deferred_login = Some((String::from(username), String::from(secret), using_access_key));
+            match self.waiting_for_login_token {
+                true => Ok(()), // do nothing
+                false => self.request_login_token()
+            }
+        }
+    }
+
+    fn do_login(&mut self, username: &str, password: &str) -> Result<(), ClientError> {
+        self.do_login_inner(username, password, false)
+    }
+
+    fn do_login_accesskey(&mut self, username: &str, access_key: &str,
+                          callback: Option<Box<Fn(&str) -> ()>>) -> Result<(), ClientError> {
+        self.access_key_callback = callback;
+        self.do_login_inner(username, access_key, true)
+    }
+
+    // pub fn query_media(&mut self, )
 }
 
+fn md5(p: &str) -> String {
+    use openssl::crypto::hash::{hash, Type};
+    use std::fmt::Write;
+    let mut c = String::with_capacity(MD5_HASH_LENGTH);
+    for byte in hash(Type::MD5, p.as_bytes()) {
+        write!(c, "{:02x}", byte).unwrap();
+    }
+    c
+}
 
 pub fn it_works() {
     // let mut client = Client::new("http://192.168.1.100/api");
     let mut client = Client::new("http://noordslet.science.ru.nl/api");
     client.follow().unwrap();
-    client.request_login_token().unwrap();
-    comet_serve(&client.comet).unwrap();
+    client.do_login_accesskey("dsprenkels", "y363So0l", None).unwrap();
+
+    comet_serve(&client.channel).unwrap();
     loop {
         let message = client.recv_message_rx.recv().unwrap();
         client.handle_message(&message).unwrap();
