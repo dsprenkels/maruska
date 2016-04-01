@@ -201,7 +201,7 @@ impl CometChannel {
     }
 }
 
-pub fn serve(shared_comet: &CometChannel) -> Result<(), IOError> {
+pub fn serve(shared_comet: &CometChannel) {
     use std::thread;
 
     if *shared_comet.session_id.read().unwrap() == None {
@@ -240,5 +240,4 @@ pub fn serve(shared_comet: &CometChannel) -> Result<(), IOError> {
             }
         });
     }
-    Ok(())
 }

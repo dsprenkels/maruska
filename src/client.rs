@@ -7,6 +7,7 @@ use rustc_serialize::json::{decode, Json, ToJson};
 use comet::{CometChannel, CometError, serve as comet_serve};
 use media::{Media, Playing, Request};
 
+
 const MD5_HASH_LENGTH: usize = 32;
 
 macro_rules! make_json_btreemap {
@@ -114,6 +115,10 @@ impl Client {
             waiting_for_qm_results: false,
             deferred_after_login: Vec::new()
         }
+    }
+
+    pub fn serve(&self) {
+        comet_serve(&self.channel)
     }
 
     fn send_message<T: ToJson>(&mut self, obj: &T) -> Result<(), ClientError> {
@@ -309,10 +314,10 @@ impl Client {
         self.qm_token += 1;
         let skip = self.qm_results.len();
 
-        // We don't want to make requests with more than 100 results, because it would
-        // introduce too much lag. So if the user (interface) requests more than `count`
-        // results, we do them in subsequent requests.
-        let count = min(self.qm_results_count - skip, 100);
+        // We don't want to make requests with more than `QUERY_CHUNK_SIZE` results,
+        // because it would introduce too much lag. So if the user (interface)
+        // requests more than `count` results, we do them in subsequent requests.
+        let count = min(self.qm_results_count - skip, self.qm_chunk_size());
 
         let b = make_json_btreemap!(
             "type" => "query_media",
@@ -325,15 +330,20 @@ impl Client {
         self.send_message(&b)
     }
 
+    fn qm_chunk_size(&self) -> usize {
+        match self.qm_results.len() {
+            x if x <= 200 => 100, // not too much lag
+            x if x <= 500 => 1000 - x, // request up till 1000
+            _ => 1000 // just request a thousand
+        }
+    }
+
     pub fn do_request(&mut self, media: &Media) -> Result<(), ClientError> {
         self.do_request_from_key(&media.key)
     }
 
     pub fn do_request_from_key(&mut self, key: &str) -> Result<(), ClientError> {
-        let b = make_json_btreemap!(
-            "type" => "request",
-            "mediaKey" => key
-        );
+        let b = make_json_btreemap!("type" => "request", "mediaKey" => key);
         self.send_message_after_login(&b)
     }
 }
@@ -352,8 +362,8 @@ pub fn it_works() {
     // let mut client = Client::new("http://192.168.1.100/api");
     let mut client = Client::new("http://noordslet.science.ru.nl/api");
     client.follow().unwrap();
+    client.serve();
 
-    comet_serve(&client.channel).unwrap();
     loop {
         let message = client.recv_message_rx.recv().unwrap();
         client.handle_message(&message).unwrap();
