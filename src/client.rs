@@ -5,7 +5,7 @@ use std::fmt;
 use rustc_serialize::json::{decode, Json, ToJson};
 
 use comet::{CometChannel, CometError, serve as comet_serve};
-use media::{Playing, Request};
+use media::{Media, Playing, Request};
 
 
 const MD5_HASH_LENGTH: usize = 32;
@@ -63,6 +63,20 @@ pub struct Client {
     // This is Some((username, secret, using_access_key)) if the client should login, but does not have a
     // login_token at this moment
     deferred_login: Option<(String, String, bool)>,
+
+    // The current search query results
+    qm_results: Vec<Media>,
+
+    // The current query_media query, if present
+    qm_query: Option<String>,
+
+    // The current query_media token, so that we will know if the results match the last query
+    qm_token: u64,
+
+    qm_results_count: usize,
+
+    // Are we currently waiting for query results?
+    waiting_for_qm_results: bool,
 }
 
 impl Client {
@@ -80,7 +94,12 @@ impl Client {
             logged_in: false,
             waiting_for_login_token: false,
             waiting_for_login: false,
-            deferred_login: None
+            deferred_login: None,
+            qm_results: Vec::new(),
+            qm_query: None,
+            qm_token: 0,
+            qm_results_count: 0,
+            waiting_for_qm_results: false
         }
     }
 
@@ -97,6 +116,7 @@ impl Client {
             &"requests" => self.handle_requests(msg),
             &"login_token" => self.handle_login_token(msg),
             &"logged_in" => self.handle_logged_in(msg),
+            &"query_media_results" => self.handle_query_media_results(msg),
             &_ => panic!("unhandled message type {}", msg_type)
         }
     }
@@ -143,7 +163,7 @@ impl Client {
         }
     }
 
-    pub fn handle_logged_in(&mut self, msg: &Json) -> Result<(), ClientError> {
+    fn handle_logged_in(&mut self, msg: &Json) -> Result<(), ClientError> {
         let access_key = try!(msg.as_object()
             .and_then(|x| x.get("accessKey"))
             .and_then(|x| x.as_string())
@@ -154,6 +174,35 @@ impl Client {
         for callback in self.access_key_callback.iter() {
             callback(access_key);
         }
+        Ok(())
+    }
+
+    fn handle_query_media_results(&mut self, msg: &Json) -> Result<(), ClientError> {
+        let token = try!(msg.as_object()
+            .and_then(|x| x.get("token"))
+            .and_then(|x| x.as_u64())
+            .ok_or_else(|| CometError::MalformedResponse(("found no token string", msg.clone())))
+        );
+        if token != self.qm_token {
+            return Ok(());
+        }
+        self.waiting_for_qm_results = false;
+
+        let results_array = try!(msg.as_object()
+            .and_then(|x| x.get("results"))
+            .and_then(|x| x.as_array())
+            .ok_or_else(|| CometError::MalformedResponse(("found no token string", msg.clone())))
+        );
+
+        for x in results_array {
+            self.qm_results.push(decode::<Media>(&format!("{}", x)).unwrap());
+        }
+
+        if self.qm_results_count > self.qm_results.len() {
+            // we need to do another request
+            return self.query_media_inner()
+        }
+
         Ok(())
     }
 
@@ -169,6 +218,16 @@ impl Client {
         b.insert("type".to_string(), "request_login_token".to_json());
         self.waiting_for_login_token = true;
         self.send_message_tx.send(b.to_json()).map_err(|x| ClientError::from(CometError::from(x)))
+    }
+
+    fn do_login(&mut self, username: &str, password: &str) -> Result<(), ClientError> {
+        self.do_login_inner(username, password, false)
+    }
+
+    fn do_login_accesskey(&mut self, username: &str, access_key: &str,
+                          callback: Option<Box<Fn(&str) -> ()>>) -> Result<(), ClientError> {
+        self.access_key_callback = callback;
+        self.do_login_inner(username, access_key, true)
     }
 
     pub fn do_login_inner(&mut self, username: &str, secret: &str, using_access_key: bool) -> Result<(), ClientError> {
@@ -197,17 +256,37 @@ impl Client {
         }
     }
 
-    fn do_login(&mut self, username: &str, password: &str) -> Result<(), ClientError> {
-        self.do_login_inner(username, password, false)
+    pub fn query_media(&mut self, query: &str, count: usize) -> Result<(), ClientError> {
+        match self.qm_query {
+            Some(ref x) if query != x => self.qm_results.clear(),
+            _ => {}
+        }
+
+        self.qm_query = Some(String::from(query));
+        self.qm_results_count = count;
+        self.query_media_inner()
     }
 
-    fn do_login_accesskey(&mut self, username: &str, access_key: &str,
-                          callback: Option<Box<Fn(&str) -> ()>>) -> Result<(), ClientError> {
-        self.access_key_callback = callback;
-        self.do_login_inner(username, access_key, true)
-    }
+    fn query_media_inner(&mut self) -> Result<(), ClientError> {
+        use std::cmp::min;
 
-    // pub fn query_media(&mut self, )
+        self.qm_token += 1;
+        let skip = self.qm_results.len();
+
+        // We don't want to make requests with more than 100 results, because it would
+        // introduce too much lag. So if the user (interface) requests more than `count`
+        // results, we do them in subsequent requests.
+        let count = min(self.qm_results_count - skip, 100);
+
+        let mut b = BTreeMap::new();
+        b.insert(String::from("type"), "query_media".to_json());
+        b.insert(String::from("query"), self.qm_query.to_json());
+        b.insert(String::from("token"), self.qm_token.to_json());
+        b.insert(String::from("skip"), skip.to_json());
+        b.insert(String::from("count"), count.to_json());
+        self.waiting_for_qm_results = true;
+        self.send_message_tx.send(b.to_json()).map_err(|x| ClientError::from(CometError::from(x)))
+    }
 }
 
 fn md5(p: &str) -> String {
@@ -223,8 +302,9 @@ fn md5(p: &str) -> String {
 pub fn it_works() {
     // let mut client = Client::new("http://192.168.1.100/api");
     let mut client = Client::new("http://noordslet.science.ru.nl/api");
+    client.query_media("", 500);
     client.follow().unwrap();
-    client.do_login_accesskey("dsprenkels", "y363So0l", None).unwrap();
+
 
     comet_serve(&client.channel).unwrap();
     loop {
