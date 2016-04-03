@@ -1,9 +1,9 @@
 use std::error::Error;
 use std::fmt;
 use std::io::Error as IOError;
-use std::sync::{Arc, Mutex, RwLock, TryLockError};
-use std::sync::mpsc::{Receiver, Sender, SendError, RecvError, TryRecvError};
+use std::sync::{Arc, Mutex, RwLock};
 
+use chan;
 use hyper;
 use hyper::error::Error as HyperError;
 use rustc_serialize::json::{Json, ParserError as JsonError, ToJson};
@@ -11,8 +11,7 @@ use rustc_serialize::json::{Json, ParserError as JsonError, ToJson};
 
 #[derive(Debug)]
 pub enum CometError {
-    Send(SendError<Json>),
-    Recv(RecvError),
+    Recv,
     Hyper(HyperError),
     IO(IOError),
     Json(JsonError),
@@ -22,18 +21,6 @@ pub enum CometError {
 impl fmt::Display for CometError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "comet error: ({})", self)
-    }
-}
-
-impl From<SendError<Json>> for CometError {
-    fn from(err: SendError<Json>) -> CometError {
-        CometError::Send(err)
-    }
-}
-
-impl From<RecvError> for CometError {
-    fn from(err: RecvError) -> CometError {
-        CometError::Recv(err)
     }
 }
 
@@ -58,9 +45,8 @@ impl From<JsonError> for CometError {
 impl Error for CometError {
     fn description(&self) -> &str {
         match self {
-            &CometError::Send(ref err) => err.description(),
-            &CometError::Recv(ref err) => err.description(),
             &CometError::Hyper(ref err) => err.description(),
+            &CometError::Recv => "cannot read on channel",
             &CometError::IO(ref err) => err.description(),
             &CometError::Json(ref err) => err.description(),
             &CometError::MalformedResponse(_) => "malformed response",
@@ -78,10 +64,10 @@ pub struct CometChannel {
     current_requests: Arc<Mutex<u8>>,
 
     // receive messages to send from the front-end
-    send_message_rx: Arc<Mutex<Receiver<Json>>>,
+    send_message_r: chan::Receiver<Json>,
 
     // where to send messages recieved from the other endpoint
-    recv_message_tx: Sender<Json>,
+    recv_message_s: chan::Sender<Json>,
 
     // comet session id
     session_id: Arc<RwLock<Option<String>>>,
@@ -92,13 +78,13 @@ pub struct CometChannel {
 
 impl CometChannel {
     pub fn new<T: ToString>(url: T,
-                            send_message_rx: Receiver<Json>,
-                            recv_message_tx: Sender<Json>) -> Result<CometChannel, CometError> {
+                            send_message_r: chan::Receiver<Json>,
+                            recv_message_s: chan::Sender<Json>) -> Result<CometChannel, CometError> {
         let mut comet = CometChannel {
             client: Arc::new(hyper::Client::new()),
             current_requests: Arc::new(Mutex::new(0)),
-            send_message_rx: Arc::new(Mutex::new(send_message_rx)),
-            recv_message_tx: recv_message_tx,
+            send_message_r: send_message_r,
+            recv_message_s: recv_message_s,
             session_id: Arc::new(RwLock::new(None)),
             url: Arc::new(url.to_string()),
         };
@@ -124,7 +110,7 @@ impl CometChannel {
                                                           packet.clone())))
         );
         for message in packet_contents {
-            self.recv_message_tx.send(message.clone()).unwrap();
+            self.recv_message_s.send(message.clone());
         }
         Ok(())
     }
@@ -173,32 +159,24 @@ impl CometChannel {
     }
 
     pub fn handle_send_message(&mut self) -> Result<(), CometError> {
-        let message_contents: Json = {
-            let rx = self.send_message_rx.lock().unwrap();
-            try!(rx.recv())
-        };
+        let message_contents: Json = try!(self.send_message_r.recv().ok_or(CometError::Recv));
         self.send_packet(Some(message_contents))
     }
 
     /// will return True if a message was sent, otherwise false
     pub fn try_handle_send_message(&mut self) -> Result<bool, CometError> {
         let packet_contents: Vec<Json> = {
-            let rx = match self.send_message_rx.try_lock() {
-                Ok(rx) => rx,
-                Err(TryLockError::WouldBlock) => return Ok(false),
-                Err(TryLockError::Poisoned(err)) => panic!("{}", err),
-            };
-
             let mut packet_contents = Vec::new();
+            let r = &self.send_message_r;
             loop {
-                let x = rx.try_recv();
-                match x {
-                    Ok(message) => packet_contents.push(message),
-                    Err(TryRecvError::Empty) => break,
-                    Err(err) => panic!("{}", err)
+                chan_select! {
+                    default => { break; },
+                    r.recv() -> x => {
+                        let message = try!(x.ok_or(CometError::Recv));
+                        packet_contents.push(message);
+                    },
                 }
             }
-
             if packet_contents.is_empty() {
                 return Ok(false);
             }

@@ -1,4 +1,5 @@
 extern crate docopt;
+extern crate env_logger;
 extern crate libclient;
 #[macro_use] extern crate log;
 extern crate rustc_serialize;
@@ -65,6 +66,10 @@ pub struct Args {
 
 
 pub fn main() {
+    if let Err(err) = env_logger::init() {
+        panic!("Failed to initialize logger: {}", err);
+    }
+
     let args: Args = Docopt::new(USAGE)
         .map(|d| d.options_first(true))
         .map(|d| d.help(true))

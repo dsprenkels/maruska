@@ -1,3 +1,4 @@
+#[macro_use] extern crate chan;
 extern crate hyper;
 #[macro_use] extern crate log;
 extern crate openssl;
@@ -8,7 +9,6 @@ mod comet;
 pub mod media;
 
 use std::collections::BTreeMap;
-use std::sync::mpsc::{channel, Receiver, Sender};
 use std::fmt;
 
 use rustc_serialize::json::{decode, Json, ToJson};
@@ -27,6 +27,16 @@ macro_rules! make_json_btreemap {
         )*
         b
     }}
+}
+
+#[derive(Debug)]
+pub enum MessageType {
+    Welcome,
+    Playing,
+    Requests,
+    LoginToken,
+    Login,
+    QueryMediaResults,
 }
 
 #[derive(Debug)]
@@ -52,10 +62,7 @@ pub struct Client {
     channel: CometChannel,
 
     // The Sender used to send messages to the remote server through the comet channel
-    send_message_tx: Sender<Json>,
-
-    // The Receiver used to receive messages from the remote server
-    recv_message_rx: Receiver<Json>,
+    send_message_s: chan::Sender<Json>,
 
     // What is currently playing
     playing: Option<Playing>,
@@ -102,13 +109,12 @@ pub struct Client {
 }
 
 impl Client {
-    pub fn new(url: &str) -> Client {
-        let (send_message_tx, send_message_rx) = channel();
-        let (recv_message_tx, recv_message_rx) = channel();
-        Client {
-            channel: CometChannel::new(&url, send_message_rx, recv_message_tx).unwrap(),
-            send_message_tx: send_message_tx,
-            recv_message_rx: recv_message_rx,
+    pub fn new(url: &str) -> (Client, chan::Receiver<Json>) {
+        let (send_message_s, send_message_r) = chan::async();
+        let (recv_message_s, recv_message_r) = chan::async();
+        (Client {
+            channel: CometChannel::new(&url, send_message_r, recv_message_s).unwrap(),
+            send_message_s: send_message_s,
             playing: None,
             requests: None,
             access_key_callback: None,
@@ -123,11 +129,7 @@ impl Client {
             qm_results_count: 0,
             waiting_for_qm_results: false,
             deferred_after_login: Vec::new()
-        }
-    }
-
-    pub fn get_receiving_channel(&self) -> &Receiver<Json> {
-        &self.recv_message_rx
+        }, recv_message_r)
     }
 
     pub fn get_playing(&self) -> &Option<Playing> {
@@ -142,20 +144,19 @@ impl Client {
         comet_serve(&self.channel)
     }
 
-    fn send_message<T: ToJson>(&mut self, obj: &T) -> Result<(), ClientError> {
-        self.send_message_tx.send(obj.to_json()).map_err(|x| ClientError::from(CometError::from(x)))
+    fn send_message<T: ToJson>(&mut self, obj: &T) {
+        self.send_message_s.send(obj.to_json())
     }
 
-    fn send_message_after_login<T: ToJson>(&mut self, obj: &T) -> Result<(), ClientError> {
+    fn send_message_after_login<T: ToJson>(&mut self, obj: &T) {
         if self.logged_in {
             self.send_message(obj)
         } else {
-            self.deferred_after_login.push(obj.to_json());
-            Ok(())
+            self.deferred_after_login.push(obj.to_json())
         }
     }
 
-    pub fn handle_message(&mut self, msg: &Json) -> Result<(), ClientError> {
+    pub fn handle_message(&mut self, msg: &Json) -> Result<MessageType, ClientError> {
         let msg_type = try!(Some(msg)
             .and_then(|x| x.as_object())
             .and_then(|x| x.get("type"))
@@ -163,7 +164,7 @@ impl Client {
             .ok_or_else(|| CometError::MalformedResponse(("found no msg type", msg.clone())))
         );
         match &msg_type {
-            &"welcome" => Ok(()),
+            &"welcome" => Ok(MessageType::Welcome),
             &"playing" => self.handle_playing(msg),
             &"requests" => self.handle_requests(msg),
             &"login_token" => self.handle_login_token(msg),
@@ -173,7 +174,7 @@ impl Client {
         }
     }
 
-    fn handle_playing(&mut self, msg: &Json) -> Result<(), ClientError> {
+    fn handle_playing(&mut self, msg: &Json) -> Result<MessageType, ClientError> {
         let playing = try!(msg.as_object()
             .and_then(|x| x.get("playing"))
             .ok_or_else(|| CometError::MalformedResponse(("found no playing object", msg.clone())))
@@ -181,10 +182,10 @@ impl Client {
         );
         self.playing = Some(playing.unwrap());
         debug!("currently playing: {:?}", self.playing);
-        Ok(())
+        Ok(MessageType::Playing)
     }
 
-    fn handle_requests(&mut self, msg: &Json) -> Result<(), ClientError> {
+    fn handle_requests(&mut self, msg: &Json) -> Result<MessageType, ClientError> {
         let requests_array = try!(msg.as_object()
             .and_then(|x| x.get("requests"))
             .and_then(|x| x.as_array())
@@ -196,10 +197,10 @@ impl Client {
         }
         self.requests = Some(requests);
         debug!("current requests: {:?}", self.requests);
-        Ok(())
+        Ok(MessageType::Requests)
     }
 
-    fn handle_login_token(&mut self, msg: &Json) -> Result<(), ClientError> {
+    fn handle_login_token(&mut self, msg: &Json) -> Result<MessageType, ClientError> {
         let login_token = try!(msg.as_object()
             .and_then(|x| x.get("login_token"))
             .and_then(|x| x.as_string())
@@ -209,13 +210,12 @@ impl Client {
         self.waiting_for_login_token = false;
         debug!("current login_token: {:?}", self.login_token);
         if let Some((ref username, ref secret, using_access_key)) = self.deferred_login.clone() {
-            self.do_login_inner(username, secret, using_access_key)
-        } else {
-            Ok(())
+            self.do_login_inner(username, secret, using_access_key);
         }
+        Ok(MessageType::LoginToken)
     }
 
-    fn handle_logged_in(&mut self, msg: &Json) -> Result<(), ClientError> {
+    fn handle_logged_in(&mut self, msg: &Json) -> Result<MessageType, ClientError> {
         let access_key = try!(msg.as_object()
             .and_then(|x| x.get("accessKey"))
             .and_then(|x| x.as_string())
@@ -230,22 +230,20 @@ impl Client {
         let mut messages = Vec::with_capacity(self.deferred_after_login.len());
         messages.append(&mut self.deferred_after_login);
         for message in messages {
-            if let Err(err) = self.send_message(&message) {
-                return Err(err);
-            }
+            self.send_message(&message);
         }
         self.deferred_after_login.clear();
-        Ok(())
+        Ok(MessageType::Login)
     }
 
-    fn handle_query_media_results(&mut self, msg: &Json) -> Result<(), ClientError> {
+    fn handle_query_media_results(&mut self, msg: &Json) -> Result<MessageType, ClientError> {
         let token = try!(msg.as_object()
             .and_then(|x| x.get("token"))
             .and_then(|x| x.as_u64())
             .ok_or_else(|| CometError::MalformedResponse(("found no token string", msg.clone())))
         );
         if token != self.qm_token {
-            return Ok(());
+            return Ok(MessageType::QueryMediaResults);
         }
         self.waiting_for_qm_results = false;
 
@@ -261,17 +259,16 @@ impl Client {
 
         if self.qm_results_count > self.qm_results.len() {
             // we need to do another request
-            return self.query_media_inner()
+            self.query_media_inner();
         }
-
-        Ok(())
+        Ok(MessageType::QueryMediaResults)
     }
 
-    pub fn follow_all(&mut self) -> Result<(), ClientError> {
+    pub fn follow_all(&mut self) {
         self.follow(vec!("playing".to_string(), "requests".to_string()))
     }
 
-    pub fn follow(&mut self, which: Vec<String>) -> Result<(), ClientError> {
+    pub fn follow(&mut self, which: Vec<String>) {
         for x in &which[..] {
             assert!(x == "playing" || x == "requests");
         }
@@ -279,27 +276,27 @@ impl Client {
             "type" => "follow",
             "which" => which
         );
-        self.send_message_tx.send(b.to_json()).map_err(|x| ClientError::from(CometError::from(x)))
+        self.send_message_s.send(b.to_json())
     }
 
 
-    pub fn request_login_token(&mut self) -> Result<(), ClientError> {
+    pub fn request_login_token(&mut self) {
         let b = make_json_btreemap!("type" => "request_login_token");
         self.waiting_for_login_token = true;
         self.send_message(&b)
     }
 
-    pub fn do_login(&mut self, username: &str, password: &str) -> Result<(), ClientError> {
+    pub fn do_login(&mut self, username: &str, password: &str) {
         self.do_login_inner(username, password, false)
     }
 
     pub fn do_login_accesskey(&mut self, username: &str, access_key: &str,
-                          callback: Option<Box<Fn(&str) -> ()>>) -> Result<(), ClientError> {
+                          callback: Option<Box<Fn(&str) -> ()>>) {
         self.access_key_callback = callback;
         self.do_login_inner(username, access_key, true)
     }
 
-    pub fn do_login_inner(&mut self, username: &str, secret: &str, using_access_key: bool) -> Result<(), ClientError> {
+    pub fn do_login_inner(&mut self, username: &str, secret: &str, using_access_key: bool) {
         if let Some(ref login_token) = self.login_token {
             self.deferred_login = None;
             let message_type = match using_access_key {
@@ -316,17 +313,16 @@ impl Client {
                 "hash" => hash
             );
             self.waiting_for_login = true;
-            self.send_message_tx.send(b.to_json()).map_err(|x| ClientError::from(CometError::from(x)))
+            self.send_message_s.send(b.to_json())
         } else {
             self.deferred_login = Some((String::from(username), String::from(secret), using_access_key));
-            match self.waiting_for_login_token {
-                true => Ok(()), // do nothing
-                false => self.request_login_token()
+            if !self.waiting_for_login_token {
+                self.request_login_token()
             }
         }
     }
 
-    pub fn query_media(&mut self, query: &str, count: usize) -> Result<(), ClientError> {
+    pub fn query_media(&mut self, query: &str, count: usize) {
         match self.qm_query {
             Some(ref x) if query != x => self.qm_results.clear(),
             _ => {}
@@ -337,7 +333,7 @@ impl Client {
         self.query_media_inner()
     }
 
-    fn query_media_inner(&mut self) -> Result<(), ClientError> {
+    fn query_media_inner(&mut self) {
         use std::cmp::min;
 
         self.qm_token += 1;
@@ -367,11 +363,11 @@ impl Client {
         }
     }
 
-    pub fn do_request(&mut self, media: &Media) -> Result<(), ClientError> {
+    pub fn do_request(&mut self, media: &Media) {
         self.do_request_from_key(&media.key)
     }
 
-    pub fn do_request_from_key(&mut self, key: &str) -> Result<(), ClientError> {
+    pub fn do_request_from_key(&mut self, key: &str) {
         let b = make_json_btreemap!("type" => "request", "mediaKey" => key);
         self.send_message_after_login(&b)
     }
@@ -389,12 +385,12 @@ fn md5(p: &str) -> String {
 
 pub fn it_works() {
     // let mut client = Client::new("http://192.168.1.100/api");
-    let mut client = Client::new("http://noordslet.science.ru.nl/api");
-    client.follow_all().unwrap();
+    let (mut client, client_rx) = Client::new("http://noordslet.science.ru.nl/api");
+    client.follow_all();
     client.serve();
 
     loop {
-        let message = client.recv_message_rx.recv().unwrap();
+        let message = client_rx.recv().unwrap();
         client.handle_message(&message).unwrap();
     }
 }

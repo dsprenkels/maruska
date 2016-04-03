@@ -25,17 +25,12 @@ pub fn main(argv: Vec<String>, global_args: super::Args) {
 }
 
 pub fn execute(_: Args, global_args: super::Args) {
-    use std::process::exit;
-
-    let mut client = Client::new(&global_args.flag_host);
-    if let Err(err) = client.follow(vec!(String::from("requests"))) {
-        println!("error: {}", err);
-        exit(1);
-    }
+    let (mut client, client_r) = Client::new(&global_args.flag_host);
+    client.follow(vec!(String::from("requests")));
     client.serve();
 
     while client.get_requests() == &None {
-        let message = client.get_receiving_channel().recv().unwrap();
+        let message = client_r.recv().unwrap();
         client.handle_message(&message).unwrap();
     }
 

@@ -8,6 +8,7 @@ name = "libclient"
 path = "lib.rs"
 
 [dependencies]
+chan = "0.1"
 hyper = "0.7"
 log = "0.3"
 openssl = "0.7"
