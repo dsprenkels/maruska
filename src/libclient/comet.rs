@@ -2,7 +2,7 @@ use std::error::Error;
 use std::fmt;
 use std::io::Error as IOError;
 use std::sync::{Arc, Mutex, RwLock, TryLockError};
-use std::sync::mpsc::{Receiver, Sender, SendError, TryRecvError};
+use std::sync::mpsc::{Receiver, Sender, SendError, RecvError, TryRecvError};
 
 use hyper;
 use hyper::error::Error as HyperError;
@@ -11,7 +11,8 @@ use rustc_serialize::json::{Json, ParserError as JsonError, ToJson};
 
 #[derive(Debug)]
 pub enum CometError {
-    Channel(SendError<Json>),
+    Send(SendError<Json>),
+    Recv(RecvError),
     Hyper(HyperError),
     IO(IOError),
     Json(JsonError),
@@ -26,7 +27,13 @@ impl fmt::Display for CometError {
 
 impl From<SendError<Json>> for CometError {
     fn from(err: SendError<Json>) -> CometError {
-        CometError::Channel(err)
+        CometError::Send(err)
+    }
+}
+
+impl From<RecvError> for CometError {
+    fn from(err: RecvError) -> CometError {
+        CometError::Recv(err)
     }
 }
 
@@ -51,7 +58,8 @@ impl From<JsonError> for CometError {
 impl Error for CometError {
     fn description(&self) -> &str {
         match self {
-            &CometError::Channel(ref err) => err.description(),
+            &CometError::Send(ref err) => err.description(),
+            &CometError::Recv(ref err) => err.description(),
             &CometError::Hyper(ref err) => err.description(),
             &CometError::IO(ref err) => err.description(),
             &CometError::Json(ref err) => err.description(),
@@ -167,8 +175,7 @@ impl CometChannel {
     pub fn handle_send_message(&mut self) -> Result<(), CometError> {
         let message_contents: Json = {
             let rx = self.send_message_rx.lock().unwrap();
-            let x = rx.recv();
-            x.unwrap()
+            try!(rx.recv())
         };
         self.send_packet(Some(message_contents))
     }
@@ -212,29 +219,25 @@ pub fn serve(shared_comet: &CometChannel) {
         let mut local_comet = shared_comet.clone();
         thread::spawn(move || -> Result<(), CometError> {
             loop {
-                let result = local_comet.try_handle_send_message();
-
-                match result {
-                    Err(err) => panic!(err),
-                    Ok(true) => continue,
-                    Ok(false) => {
-                        // do we need to send a long poll request?
-                        if {
-                            let current_requests = local_comet.current_requests.clone();
-                            let mut x = current_requests.lock().unwrap();
-                            match *x {
-                                0 => { *x += 1; true },
-                                1 => false,
-                                _ => unreachable!()
-                            }
-                        } {
-                            try!(local_comet.poll());
-                            let current_requests = local_comet.current_requests.clone();
-                            let mut x = current_requests.lock().unwrap();
-                            *x -= 1;
-                        } else {
-                            try!(local_comet.handle_send_message());
+                if try!(local_comet.try_handle_send_message()) {
+                    continue
+                } else {
+                    // do we need to send a long poll request?
+                    if {
+                        let current_requests = local_comet.current_requests.clone();
+                        let mut x = current_requests.lock().unwrap();
+                        match *x {
+                            0 => { *x += 1; true },
+                            1 => false,
+                            _ => unreachable!()
                         }
+                    } {
+                        try!(local_comet.poll());
+                        let current_requests = local_comet.current_requests.clone();
+                        let mut x = current_requests.lock().unwrap();
+                        *x -= 1;
+                    } else {
+                        try!(local_comet.handle_send_message());
                     }
                 }
             }

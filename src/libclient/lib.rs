@@ -1,3 +1,12 @@
+extern crate hyper;
+#[macro_use] extern crate log;
+extern crate openssl;
+extern crate rustc_serialize;
+extern crate time;
+
+mod comet;
+pub mod media;
+
 use std::collections::BTreeMap;
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::fmt;
@@ -93,7 +102,7 @@ pub struct Client {
 }
 
 impl Client {
-    fn new(url: &str) -> Client {
+    pub fn new(url: &str) -> Client {
         let (send_message_tx, send_message_rx) = channel();
         let (recv_message_tx, recv_message_rx) = channel();
         Client {
@@ -117,6 +126,14 @@ impl Client {
         }
     }
 
+    pub fn get_receiving_channel(&self) -> &Receiver<Json> {
+        &self.recv_message_rx
+    }
+
+    pub fn get_playing(&self) -> &Option<Playing> {
+        &self.playing
+    }
+
     pub fn serve(&self) {
         comet_serve(&self.channel)
     }
@@ -134,7 +151,7 @@ impl Client {
         }
     }
 
-    fn handle_message(&mut self, msg: &Json) -> Result<(), ClientError> {
+    pub fn handle_message(&mut self, msg: &Json) -> Result<(), ClientError> {
         let msg_type = try!(Some(msg)
             .and_then(|x| x.as_object())
             .and_then(|x| x.get("type"))
@@ -246,13 +263,18 @@ impl Client {
         Ok(())
     }
 
-    pub fn follow(&mut self) -> Result<(), ClientError> {
+    pub fn follow_all(&mut self) -> Result<(), ClientError> {
+        self.follow(vec!("playing".to_string(), "requests".to_string()))
+    }
+
+    pub fn follow(&mut self, which: Vec<String>) -> Result<(), ClientError> {
         let b = make_json_btreemap!(
             "type" => "follow",
-            "which" => vec!("playing".to_string(), "requests".to_string())
+            "which" => which
         );
         self.send_message_tx.send(b.to_json()).map_err(|x| ClientError::from(CometError::from(x)))
     }
+
 
     pub fn request_login_token(&mut self) -> Result<(), ClientError> {
         let b = make_json_btreemap!("type" => "request_login_token");
@@ -260,11 +282,11 @@ impl Client {
         self.send_message(&b)
     }
 
-    fn do_login(&mut self, username: &str, password: &str) -> Result<(), ClientError> {
+    pub fn do_login(&mut self, username: &str, password: &str) -> Result<(), ClientError> {
         self.do_login_inner(username, password, false)
     }
 
-    fn do_login_accesskey(&mut self, username: &str, access_key: &str,
+    pub fn do_login_accesskey(&mut self, username: &str, access_key: &str,
                           callback: Option<Box<Fn(&str) -> ()>>) -> Result<(), ClientError> {
         self.access_key_callback = callback;
         self.do_login_inner(username, access_key, true)
@@ -361,7 +383,7 @@ fn md5(p: &str) -> String {
 pub fn it_works() {
     // let mut client = Client::new("http://192.168.1.100/api");
     let mut client = Client::new("http://noordslet.science.ru.nl/api");
-    client.follow().unwrap();
+    client.follow_all().unwrap();
     client.serve();
 
     loop {

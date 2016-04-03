@@ -6,12 +6,11 @@ authors = ["Daan Sprenkels <dsprenkels@gmail.com>"]
 [dependencies]
 docopt = "0.6"
 env_logger = "0.3.2"
-hyper = "0.7"
 log = "0.3"
 ncurses = "5.73"
-openssl = "0.7"
 rustc-serialize = "0.3"
-time = "0.1"
+strsim = "0.4"
+libclient = { path = "src/libclient/" }
 
 [[bin]]
 name = "maruska"
@@ -19,4 +18,4 @@ path = "src/main.rs"
 
 [[bin]]
 name = "maruska-cli"
-path = "src/cli.rs"
+path = "src/cli/main.rs"

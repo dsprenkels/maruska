@@ -1,17 +1,10 @@
 extern crate env_logger;
-extern crate hyper;
+extern crate libclient;
 #[macro_use] extern crate log;
 extern crate ncurses;
-extern crate openssl;
-extern crate rustc_serialize;
-extern crate time;
-
-mod client;
-mod comet;
-mod media;
 
 use std::char;
-use client::it_works;
+use libclient::it_works;
 
 macro_rules! ncurses_cleanup {
     ( $contents:expr ) => {
@@ -28,7 +21,6 @@ struct App {
     querywindow: ncurses::WINDOW,
     query: String,
 }
-
 
 impl App {
     fn new() -> App {

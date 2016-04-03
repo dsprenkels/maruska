@@ -1,0 +1,15 @@
+[package]
+name = "libclient"
+version = "0.1.0"
+authors = ["Daan Sprenkels <dsprenkels@gmail.com>"]
+
+[lib]
+name = "libclient"
+path = "lib.rs"
+
+[dependencies]
+hyper = "0.7"
+log = "0.3"
+openssl = "0.7"
+rustc-serialize = "0.3"
+time = "0.1"
