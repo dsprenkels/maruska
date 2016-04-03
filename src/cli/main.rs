@@ -5,6 +5,7 @@ extern crate rustc_serialize;
 extern crate strsim;
 
 mod playing;
+mod queue;
 mod utils;
 
 use docopt::{Docopt, Error as DocoptError};
@@ -82,7 +83,13 @@ pub fn main() {
                 .collect();
             playing::main(argv, args)
         },
-        "queue" => unimplemented!(),
+        "queue" => {
+            let argv = ["maruska", "queue"].into_iter()
+                .map(|x| String::from(*x))
+                .chain(args.arg_args.clone())
+                .collect();
+            queue::main(argv, args)
+        }
         "search" => unimplemented!(),
         "request" => unimplemented!(),
         "skip" => unimplemented!(),

@@ -6,10 +6,10 @@ use libclient::Client;
 pub struct Args;
 
 const USAGE: &'static str = "
-Retrieve the song that is currently played
+List the current request queue
 
 Usage:
-  maruska playing [options]
+  maruska queue [options]
 
 Options:
   -h --help     Display this message
@@ -28,22 +28,20 @@ pub fn execute(_: Args, global_args: super::Args) {
     use std::process::exit;
 
     let mut client = Client::new(&global_args.flag_host);
-    if let Err(err) = client.follow(vec!(String::from("playing"))) {
+    if let Err(err) = client.follow(vec!(String::from("requests"))) {
         println!("error: {}", err);
         exit(1);
     }
     client.serve();
 
-    while client.get_playing() == &None {
+    while client.get_requests() == &None {
         let message = client.get_receiving_channel().recv().unwrap();
         client.handle_message(&message).unwrap();
     }
 
-    let playing = client.get_playing().clone().unwrap();
-    let media = playing.media;
-    if let Some(requested_by) = playing.requested_by {
-        println!("{} - {} (requested by {})", media.artist, media.title, requested_by);
-    } else {
-        println!("{} - {} (requested at random by the server)", media.artist, media.title);
-        };
+    for request in client.get_requests().clone().unwrap() {
+        let media = request.media;
+        let requested_by = if let Some(x) = request.by {x} else { String::from("marietje") };
+        println!("{}: {} - {}", requested_by, media.artist, media.title);
+    }
 }

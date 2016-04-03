@@ -134,6 +134,10 @@ impl Client {
         &self.playing
     }
 
+    pub fn get_requests(&self) -> &Option<Vec<Request>> {
+        &self.requests
+    }
+
     pub fn serve(&self) {
         comet_serve(&self.channel)
     }
