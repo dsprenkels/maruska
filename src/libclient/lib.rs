@@ -268,6 +268,9 @@ impl Client {
     }
 
     pub fn follow(&mut self, which: Vec<String>) -> Result<(), ClientError> {
+        for x in &which[..] {
+            assert!(x == "playing" || x == "requests");
+        }
         let b = make_json_btreemap!(
             "type" => "follow",
             "which" => which
