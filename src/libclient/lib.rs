@@ -10,6 +10,7 @@ pub mod media;
 
 use std::collections::BTreeMap;
 use std::fmt;
+use std::thread;
 
 use rustc_serialize::json::{decode, Json, ToJson};
 
@@ -140,7 +141,7 @@ impl Client {
         &self.requests
     }
 
-    pub fn serve(&self) {
+    pub fn serve(&self) -> Vec<thread::JoinHandle<Result<(), CometError>>> {
         comet_serve(&self.channel)
     }
 

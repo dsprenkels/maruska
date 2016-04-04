@@ -7,6 +7,7 @@ use chan;
 use hyper;
 use hyper::error::Error as HyperError;
 use rustc_serialize::json::{Json, ParserError as JsonError, ToJson};
+use std::thread;
 
 
 #[derive(Debug)]
@@ -186,16 +187,15 @@ impl CometChannel {
     }
 }
 
-pub fn serve(shared_comet: &CometChannel) {
-    use std::thread;
-
+pub fn serve(shared_comet: &CometChannel) -> Vec<thread::JoinHandle<Result<(), CometError>>> {
     if *shared_comet.session_id.read().unwrap() == None {
         panic!("I cannot serve when I'm not connected!")
     }
 
+    let mut join_handles = Vec::new();
     for _ in 0..2 {
         let mut local_comet = shared_comet.clone();
-        thread::spawn(move || -> Result<(), CometError> {
+        join_handles.push(thread::spawn(move || -> Result<(), CometError> {
             loop {
                 if try!(local_comet.try_handle_send_message()) {
                     continue
@@ -219,6 +219,7 @@ pub fn serve(shared_comet: &CometChannel) {
                     }
                 }
             }
-        });
+        }));
     }
+    join_handles
 }
