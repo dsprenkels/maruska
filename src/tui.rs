@@ -15,8 +15,6 @@ pub enum Error {
 
 pub struct TUI {
     results_offset: usize,
-    results_invalidated: bool,
-    query_invalidated: bool,
     query: String,
 }
 
@@ -25,8 +23,6 @@ impl TUI {
         unsafe { tb_init(); }
         TUI {
             results_offset: 0,
-            results_invalidated: true,
-            query_invalidated: true,
             query: String::new(),
         }
     }
@@ -93,7 +89,6 @@ impl TUI {
 
     fn handle_input_backspace(&mut self, _: u16) -> Result<(), Error> {
         self.query.pop();
-        self.invalidate_query();
         Ok(())
     }
 
@@ -107,7 +102,7 @@ impl TUI {
         } else {
             self.query.clear();
         }
-        Ok(self.invalidate_query())
+        Ok(())
     }
 
     fn handle_input_cmdtypechar(&mut self, ch: u32) -> Result<(), Error> {
@@ -120,7 +115,7 @@ impl TUI {
                 _ => error!("unreachable"),
             }
         }
-        Ok((self.invalidate_query()))
+        Ok(())
     }
 
     fn handle_input_alphanum(&mut self, input_ch: u32) -> Result<(), Error> {
@@ -132,7 +127,7 @@ impl TUI {
             },
             None => error!("unreachable")
         }
-        Ok((self.invalidate_query()))
+        Ok(())
     }
 
     unsafe fn print(&self, x: i32, y: i32, fg: u16, bg: u16, s: &str) {
@@ -158,12 +153,8 @@ impl TUI {
 
     pub fn draw(&mut self, client: &Client) {
         unsafe { tb_clear(); }
-        if self.results_invalidated {
-            self.draw_results(client)
-        }
-        if self.query_invalidated {
-            self.draw_query(client)
-        }
+        self.draw_results(client);
+        self.draw_query(client);
         unsafe { tb_present(); }
     }
 
@@ -211,8 +202,6 @@ impl TUI {
                 }
             }
         }
-
-        self.results_invalidated = false;
     }
 
     fn draw_query(&mut self, _: &Client) {
@@ -221,20 +210,6 @@ impl TUI {
             let (w, h) = (tb_width(), tb_height());
             self.print_truncate(0, h-1, 0, 0, &self.query, w as usize, 0, 0, "...");
         }
-        // for i in 0..ncurses::COLS {
-            // ncurses::mvwaddch(self.querywindow, 0, i, ' ' as ncurses::chtype);
-        // }
-        // ncurses::mvwaddnstr(self.querywindow, 0, 0, &self.query, self.query.len() as i32);
-        // ncurses::wrefresh(self.querywindow);
-        self.query_invalidated = false;
-    }
-
-    pub fn invalidate_resultswindow(&mut self) {
-        self.results_invalidated = true;
-    }
-
-    pub fn invalidate_query(&mut self) {
-        self.query_invalidated = true;
     }
 }
 

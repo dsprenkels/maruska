@@ -8,6 +8,7 @@ extern crate time;
 mod tui;
 
 use libclient::Client;
+use std::time::Duration;
 use tui::{TUI, Error as TUIError};
 
 const URL: &'static str = "http://noordslet.science.ru.nl/api";
@@ -28,12 +29,10 @@ fn main() {
     let tui_r = TUI::run();
 
     loop {
+        let timeout = chan::after(Duration::from_secs(1));
         chan_select! {
             client_r.recv() -> message => {
-                match client.handle_message(&message.unwrap()) {
-                    Ok(_) => tui.invalidate_resultswindow(),
-                    Err(_) => break
-                }
+                if let Err(_) = client.handle_message(&message.unwrap()) {break}
             },
             tui_r.recv() -> event => match tui.handle_event(event.unwrap()) {
                 Ok(_) => {},
@@ -43,6 +42,7 @@ fn main() {
                     panic!("{}", s)
                 }
             },
+            timeout.recv() => {},
         }
         tui.draw(&client);
     }
