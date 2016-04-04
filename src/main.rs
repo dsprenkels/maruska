@@ -34,7 +34,7 @@ fn main() {
             client_r.recv() -> message => {
                 if let Err(_) = client.handle_message(&message.unwrap()) {break}
             },
-            tui_r.recv() -> event => match tui.handle_event(event.unwrap()) {
+            tui_r.recv() -> event => match tui.handle_event(&mut client, event.unwrap()) {
                 Ok(_) => {},
                 Err(TUIError::Quit) => break,
                 Err(TUIError::Custom(s)) => {

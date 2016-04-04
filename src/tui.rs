@@ -52,12 +52,17 @@ impl TUI {
         }
     }
 
-    pub fn handle_event(&mut self, event: RawEvent) -> Result<(), Error> {
+    fn do_query(&self, client: &mut Client) {
+        let height = unsafe { tb_height() as usize };
+        client.query_media(&self.query, height * 10);
+    }
+
+    pub fn handle_event(&mut self, client: &mut Client, event: RawEvent) -> Result<(), Error> {
         match event.etype {
             TB_EVENT_KEY => if event.ch == 0 {
-                self.handle_input_key(event.key)
+                self.handle_input_key(event.key, client)
             } else {
-                self.handle_input_ch(event.ch)
+                self.handle_input_ch(event.ch, client)
             },
             TB_EVENT_RESIZE => unimplemented!(),
             TB_EVENT_MOUSE => unimplemented!(),
@@ -68,35 +73,36 @@ impl TUI {
         }
     }
 
-    fn handle_input_ch(&mut self, ch: u32) -> Result<(), Error> {
+    fn handle_input_ch(&mut self, ch: u32, client: &mut Client) -> Result<(), Error> {
         match ch {
-            47 | 58 => self.handle_input_cmdtypechar(ch),
-            33 ... 126 => self.handle_input_alphanum(ch),
+            47 | 58 => self.handle_input_cmdtypechar(ch, client),
+            33 ... 126 => self.handle_input_alphanum(ch, client),
             ch => Err(Error::Custom(format!("handling of ch {} is not implemented", ch)))
         }
     }
 
-    fn handle_input_key(&mut self, key: u16) -> Result<(), Error> {
+    fn handle_input_key(&mut self, key: u16, client: &mut Client) -> Result<(), Error> {
         match key {
-            TB_KEY_ENTER => self.handle_input_linefeed(key),
-            TB_KEY_SPACE => self.handle_input_alphanum(' ' as u32),
-            TB_KEY_BACKSPACE | TB_KEY_BACKSPACE2 => self.handle_input_backspace(key),
+            TB_KEY_ENTER => self.handle_input_linefeed(key, client),
+            TB_KEY_SPACE => self.handle_input_alphanum(' ' as u32, client),
+            TB_KEY_BACKSPACE | TB_KEY_BACKSPACE2 => self.handle_input_backspace(key, client),
             TB_KEY_CTRL_C => Err(Error::Quit),
-            TB_KEY_CTRL_U => self.handle_input_nak(key),
+            TB_KEY_CTRL_U => self.handle_input_nak(key, client),
             key => Err(Error::Custom(format!("handling of keycode {} is not implemented", key))),
         }
     }
 
-    fn handle_input_backspace(&mut self, _: u16) -> Result<(), Error> {
+    fn handle_input_backspace(&mut self, _: u16, client: &mut Client) -> Result<(), Error> {
         self.query.pop();
+        self.do_query(client);
         Ok(())
     }
 
-    fn handle_input_linefeed(&mut self, _: u16) -> Result<(), Error> {
+    fn handle_input_linefeed(&mut self, _: u16, _: &mut Client) -> Result<(), Error> {
         Err(Error::Custom(format!("handle_input_linefeed is not implemented")))
     }
 
-    fn handle_input_nak(&mut self, _: u16) -> Result<(), Error> {
+    fn handle_input_nak(&mut self, _: u16, _: &mut Client) -> Result<(), Error> {
         if self.query.len() > 1 {
             self.query.truncate(1);
         } else {
@@ -105,7 +111,7 @@ impl TUI {
         Ok(())
     }
 
-    fn handle_input_cmdtypechar(&mut self, ch: u32) -> Result<(), Error> {
+    fn handle_input_cmdtypechar(&mut self, ch: u32, client: &mut Client) -> Result<(), Error> {
         if !self.query.is_empty() { return Ok(()); }
 
         if self.query.len() == 0 {
@@ -115,10 +121,11 @@ impl TUI {
                 _ => error!("unreachable"),
             }
         }
+        self.do_query(client);
         Ok(())
     }
 
-    fn handle_input_alphanum(&mut self, input_ch: u32) -> Result<(), Error> {
+    fn handle_input_alphanum(&mut self, input_ch: u32, client: &mut Client) -> Result<(), Error> {
         let ch_option = char::from_u32(input_ch as u32);
         match ch_option {
             Some(ch) => {
@@ -127,6 +134,7 @@ impl TUI {
             },
             None => error!("unreachable")
         }
+        self.do_query(client);
         Ok(())
     }
 
