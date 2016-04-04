@@ -7,11 +7,12 @@ authors = ["Daan Sprenkels <dsprenkels@gmail.com>"]
 chan = "0.1"
 docopt = "0.6"
 env_logger = "0.3.2"
+libclient = { path = "src/libclient/" }
 log = "0.3"
-ncurses = "5.73"
 rustc-serialize = "0.3"
 strsim = "0.4"
-libclient = { path = "src/libclient/" }
+termbox-sys = "0.2"
+time = "0.1"
 
 [[bin]]
 name = "maruska"
