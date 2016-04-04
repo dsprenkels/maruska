@@ -2,11 +2,11 @@
 extern crate env_logger;
 extern crate libclient;
 #[macro_use] extern crate log;
-extern crate rustbox;
+extern crate ncurses;
 
 mod tui;
 
-use libclient::{Client, MessageType};
+use libclient::Client;
 use tui::TUI;
 
 const URL: &'static str = "http://noordslet.science.ru.nl/api";
@@ -17,6 +17,10 @@ fn main() {
         panic!("Failed to initialize logger: {}", err);
     }
 
+    // initialize locale (best guess)
+    let locale_conf = ncurses::LcCategory::all;
+    ncurses::setlocale(locale_conf, "");
+
     // initialize client
     let (mut client, client_r) = Client::new(URL);
     client.follow_all();
@@ -24,19 +28,17 @@ fn main() {
 
     // initialize user interface
     let mut tui = TUI::new();
-    let tui_r = tui.run();
+    let tui_r = TUI::run();
 
     loop {
         chan_select! {
             client_r.recv() -> message => {
                 match client.handle_message(&message.unwrap()) {
-                    Ok(MessageType::Requests) => tui.invalidate_resultswindow(),
-                    Ok(MessageType::Playing) => tui.invalidate_resultswindow(),
-                    Ok(_) => {},
-                    Err(err) => panic!("error: {}", err),
+                    Ok(_) => tui.invalidate_resultswindow(),
+                    Err(_) => break
                 }
             },
-            tui_r.recv() -> event => tui.handle_event(event.unwrap()),
+            tui_r.recv() -> ch => tui.handle_input(ch.unwrap()),
         }
         tui.redraw(&client);
     }

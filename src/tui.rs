@@ -1,92 +1,77 @@
 use std::char;
 use std::thread;
-use std::sync::{Arc, Mutex};
 
 use chan;
+use ncurses;
 
 use libclient::Client;
-use rustbox;
 
+macro_rules! ncurses_cleanup {
+    ( $contents:expr ) => {
+        {
+            ncurses::endwin();
+            $contents
+        }
+    };
+}
 
 pub struct TUI {
-    rustbox: Arc<Mutex<rustbox::RustBox>>,
-    results_invalidated: bool,
-    query_invalidated: bool,
+    resultswindow: ncurses::WINDOW,
+    resultswindow_invalidated: bool,
+    querywindow: ncurses::WINDOW,
+    querywindow_invalidated: bool,
     query: String,
 }
 
 impl TUI {
     pub fn new() -> TUI {
-        let rustbox = match rustbox::RustBox::init(Default::default()) {
-            Result::Ok(v) => v,
-            Result::Err(e) => panic!("{}", e),
-        };
+        ncurses::initscr();
+        ncurses::cbreak();
+        ncurses::keypad(ncurses::stdscr, true);
+        ncurses::noecho();
         TUI {
-            rustbox: Arc::new(Mutex::new(rustbox)),
-            results_invalidated: true,
-            query_invalidated: true,
+            resultswindow: ncurses::newwin(ncurses::LINES - 1, ncurses::COLS, 0, 0),
+            resultswindow_invalidated: true,
+            querywindow: ncurses::newwin(1, ncurses::COLS, ncurses::LINES - 1, 0),
+            querywindow_invalidated: true,
             query: String::new(),
         }
     }
 
-    pub fn run(&mut self) -> chan::Receiver<rustbox::Event> {
-        let (tx, rx) = chan::sync(0);
-        let local_rustbox = self.rustbox.clone();
-        thread::spawn(|| TUI::mainloop(local_rustbox, tx));
+    pub fn run() -> chan::Receiver<i32> {
+        let (tx, rx) = chan::async();
+        thread::spawn(move || TUI::mainloop(tx));
         rx
     }
 
-    fn mainloop(rustbox: Arc<Mutex<rustbox::RustBox>>,
-                event_sender: chan::Sender<rustbox::Event>) {
+    fn mainloop(events_tx: chan::Sender<i32>) {
         loop {
-            let event_option = {
-                let local_rustbox = rustbox.lock().unwrap();
-                local_rustbox.poll_event(false)
-            };
-            match event_option {
-                Ok(event) => event_sender.send(event),
-                Err(err) => panic!("{}", err)
-            }
+            let ch = ncurses::getch();
+            events_tx.send(ch);
         }
     }
 
-    pub fn handle_event(&mut self, event: rustbox::Event) {
-        match event {
-            rustbox::Event::KeyEventRaw(_, _, _) => panic!("event should not be KeyEventRaw(_)"),
-            rustbox::Event::KeyEvent(key) => self.handle_key_event(key),
-            rustbox::Event::ResizeEvent(width, height) => self.handle_resize_event(width, height),
-            rustbox::Event::MouseEvent(_, _, _) => unimplemented!(),
-            rustbox::Event::NoEvent => {}
+    pub fn handle_input(&mut self, ch: i32) {
+        match ch {
+            ncurses::KEY_BACKSPACE => self.handle_input_backspace(ch),
+            10 => self.handle_input_linefeed(ch),
+            21 => self.handle_input_nak(ch),
+            47 | 58 => self.handle_input_cmdtypechar(ch), // '/' and ':'
+            32 ... 126 => self.handle_input_alphanum(ch),
+            ch => ncurses_cleanup!(panic!("handling of keycode {} is not implemented", ch))
         }
     }
 
-    fn handle_key_event(&mut self, key: rustbox::keyboard::Key) {
-        use rustbox::keyboard::Key::*;
-
-        match key {
-            Enter => self.handle_input_linefeed(),
-            Backspace => self.handle_input_backspace(),
-            Char(ch @ '/') | Char(ch @ ':') => self.handle_input_cmdtypechar(ch), // '/' and ':'
-            Ctrl('u') => self.handle_input_nak(),
-            Char(ch @ ' '...'~') => self.handle_input_alphanum(ch),
-            ch => panic!("handling of keycode {:?} is not implemented", ch)
-        }
-    }
-
-    fn handle_resize_event(&mut self, width: i32, height: i32) {
-        unimplemented!();
-    }
-
-    fn handle_input_backspace(&mut self) {
+    fn handle_input_backspace(&mut self, _: i32) {
         self.query.pop();
         self.invalidate_querywindow()
     }
 
-    fn handle_input_linefeed(&mut self) {
-        unimplemented!();
+    fn handle_input_linefeed(&mut self, _: i32) {
+        ncurses_cleanup!(unimplemented!());
     }
 
-    fn handle_input_nak(&mut self) {
+    fn handle_input_nak(&mut self, _: i32) {
         if self.query.len() > 1 {
             self.query.truncate(1);
         } else {
@@ -95,32 +80,36 @@ impl TUI {
         self.invalidate_querywindow()
     }
 
-    fn handle_input_cmdtypechar(&mut self, ch: char) {
+    fn handle_input_cmdtypechar(&mut self, ch: i32) {
         if !self.query.is_empty() { return; }
 
         if self.query.len() == 0 {
-            self.query.push(ch);
+            match ch {
+                47 => self.query.push('/'),
+                58 => self.query.push(':'),
+                _ => ncurses_cleanup!(unreachable!()),
+            }
         }
         self.invalidate_querywindow()
     }
 
-    fn handle_input_alphanum(&mut self, input_ch: char) {
+    fn handle_input_alphanum(&mut self, input_ch: i32) {
         let ch_option = char::from_u32(input_ch as u32);
         match ch_option {
             Some(ch) => {
                 if self.query.is_empty() { self.query.push('/') };
                 self.query.push(ch);
             },
-            None => unreachable!()
+            None => ncurses_cleanup!(unreachable!())
         }
         self.invalidate_querywindow()
     }
 
     pub fn redraw(&mut self, client: &Client) {
-        if self.results_invalidated {
+        if self.resultswindow_invalidated {
             self.redraw_resultswindow(client)
         }
-        if self.query_invalidated {
+        if self.querywindow_invalidated {
             self.redraw_querywindow(client)
         }
     }
@@ -132,28 +121,34 @@ impl TUI {
                 Some(ref by) => &by,
                 None => "marietje"
             };
-            // ncurses::mvwaddnstr(self.resultswindow, 0, 0, requested_by, requested_by.len() as i32);
+            ncurses::mvwaddnstr(self.resultswindow, 0, 0, requested_by, requested_by.len() as i32);
         }
-        // ncurses::wrefresh(self.resultswindow);
-        self.results_invalidated = false;
+        ncurses::wrefresh(self.resultswindow);
+        self.resultswindow_invalidated = false;
 
     }
 
-    fn redraw_querywindow(&mut self, client: &Client) {
+    fn redraw_querywindow(&mut self, _: &Client) {
         // draw query field
-        // for i in 0..ncurses::COLS {
-            // ncurses::mvwaddch(self.querywindow, 0, i, ' ' as ncurses::chtype);
-        // }
-        // ncurses::mvwaddnstr(self.querywindow, 0, 0, &self.query, self.query.len() as i32);
-        // ncurses::wrefresh(self.querywindow);
-        self.query_invalidated = false;
+        for i in 0..ncurses::COLS {
+            ncurses::mvwaddch(self.querywindow, 0, i, ' ' as ncurses::chtype);
+        }
+        ncurses::mvwaddnstr(self.querywindow, 0, 0, &self.query, self.query.len() as i32);
+        ncurses::wrefresh(self.querywindow);
+        self.querywindow_invalidated = false;
     }
 
     pub fn invalidate_resultswindow(&mut self) {
-        self.results_invalidated = true;
+        self.resultswindow_invalidated = true;
     }
 
     pub fn invalidate_querywindow(&mut self) {
-        self.query_invalidated = true;
+        self.querywindow_invalidated = true;
+    }
+}
+
+impl Drop for TUI {
+    fn drop(&mut self) {
+        ncurses::endwin();
     }
 }
