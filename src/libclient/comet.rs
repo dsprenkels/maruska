@@ -58,22 +58,22 @@ impl Error for CometError {
 
 #[derive(Clone)]
 pub struct CometChannel {
-    // hyper client instance
+    /// hyper client instance
     client: Arc<hyper::Client>,
 
-    // amount of current outstanding requests
+    /// amount of current outstanding requests
     current_requests: Arc<Mutex<u8>>,
 
-    // receive messages to send from the front-end
+    /// receive messages to send from the front-end
     send_message_r: chan::Receiver<Json>,
 
-    // where to send messages recieved from the other endpoint
+    /// where to send messages recieved from the other endpoint
     recv_message_s: chan::Sender<Json>,
 
-    // comet session id
+    /// comet session id
     session_id: Arc<RwLock<Option<String>>>,
 
-    // reference to the url string slice
+    /// reference to the url string slice
     url: Arc<String>,
 }
 

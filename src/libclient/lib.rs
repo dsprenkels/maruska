@@ -68,44 +68,44 @@ pub struct Client {
     // What is currently playing
     playing: Option<Playing>,
 
-    // What the current requests are
+    /// What the current requests are
     requests: Option<Vec<Request>>,
 
-    // When we get an access key, call the following callbacks (if present)
+    /// When we get an access key, call the following callbacks (if present)
     access_key_callback: Option<Box<Fn(&str) -> ()>>,
 
-    // Some login token acquired from the remote server
+    /// Some login token acquired from the remote server
     login_token: Option<String>,
 
-    // Are we currently logged in?
+    /// Are we currently logged in?
     logged_in: bool,
 
-    // Are we waiting for a login token?
+    /// Are we waiting for a login token?
     waiting_for_login_token: bool,
 
-    // Are we waiting for a login response?
+    /// Are we waiting for a login response?
     waiting_for_login: bool,
 
-    // This is Some((username, secret, using_access_key)) if the client should login,
-    // but does not have a login_token at this moment
+    /// This is Some((username, secret, using_access_key)) if the client should login,
+    /// but does not have a login_token at this moment
     deferred_login: Option<(String, String, bool)>,
 
-    // The current search query results
+    /// The current search query results
     qm_results: Vec<Media>,
 
-    // The current query_media query, if present
+    /// The current query_media query, if present
     qm_query: Option<String>,
 
-    // The current query_media token, so that we will know if the results match the last query
+    /// The current query_media token, so that we will know if the results match the last query
     qm_token: u64,
 
-    // The amount of results we want to have for this query
+    /// The amount of results we want to have for this query
     qm_results_count: usize,
 
-    // Are we currently waiting for query results?
+    /// Are we currently waiting for query results?
     waiting_for_qm_results: bool,
 
-    // This is a list of all messages that should be sent after we are logged in
+    /// This is a list of all messages that should be sent after we are logged in
     deferred_after_login: Vec<Json>,
 }
 
