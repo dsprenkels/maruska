@@ -97,8 +97,10 @@ pub struct Client {
     /// The current query_media query, if present
     qm_query: Option<String>,
 
-    /// The current query_media token, so that we will know if the results match the last query
-    qm_token: u64,
+    /// The current query_media token, so that we will know if the results match the last query.
+    /// And the amount of results we requested for this token, so that we will know if we have
+    /// reached the end of the results list.
+    qm_token_and_count: (u64, usize),
 
     /// The amount of results we want to have for this query
     qm_results_count: usize,
@@ -127,7 +129,7 @@ impl Client {
             deferred_login: None,
             qm_results: Vec::new(),
             qm_query: None,
-            qm_token: 0,
+            qm_token_and_count: (0, 0),
             qm_results_count: 0,
             waiting_for_qm_results: false,
             deferred_after_login: Vec::new()
@@ -245,7 +247,7 @@ impl Client {
             .and_then(|x| x.as_u64())
             .ok_or_else(|| CometError::MalformedResponse(("found no token string", msg.clone())))
         );
-        if token != self.qm_token {
+        if token != self.qm_token_and_count.0 {
             return Ok(MessageType::QueryMediaResults);
         }
         self.waiting_for_qm_results = false;
@@ -260,7 +262,8 @@ impl Client {
             self.qm_results.push(decode::<Media>(&format!("{}", x)).unwrap());
         }
 
-        if self.qm_results_count > self.qm_results.len() {
+        if results_array.len() >= self.qm_token_and_count.1 &&
+           self.qm_results_count > self.qm_results.len() {
             // we need to do another request
             self.query_media_inner();
         }
@@ -337,20 +340,20 @@ impl Client {
     fn query_media_inner(&mut self) {
         use std::cmp::min;
 
-        self.qm_token += 1;
         let skip = self.qm_results.len();
+        self.qm_token_and_count.0 += 1;
 
         // We don't want to make requests with more than `QUERY_CHUNK_SIZE` results,
         // because it would introduce too much lag. So if the user (interface)
         // requests more than `count` results, we do them in subsequent requests.
-        let count = min(self.qm_results_count - skip, self.qm_chunk_size());
+        self.qm_token_and_count.1 = min(self.qm_results_count - skip, self.qm_chunk_size());
 
         let b = make_json_btreemap!(
             "type" => "query_media",
             "query" => self.qm_query,
-            "token" => self.qm_token,
+            "token" => self.qm_token_and_count.0,
             "skip" => skip,
-            "count" => count
+            "count" => self.qm_token_and_count.1
         );
         self.waiting_for_qm_results = true;
         self.send_message(&b)
