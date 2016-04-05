@@ -1,12 +1,13 @@
 use std::char;
-use std::thread;
 use std::cmp::max;
+use std::thread;
 
 use chan;
+use rustc_serialize::json::Json;
 use termbox::*;
 use time::{Duration, get_time};
 
-use libclient::Client;
+use libclient::{Client, ClientError, MessageType};
 
 macro_rules! cleanup {
     ( $ret:expr ) => {
@@ -23,20 +24,32 @@ pub enum Error {
 }
 
 pub struct TUI {
+    client: Client,
     results_offset: usize,
     query: String,
 }
 
 impl TUI {
-    pub fn new() -> TUI {
+    pub fn new(url: &str) -> (TUI, (chan::Receiver<Json>,
+                                    chan::Receiver<RawEvent>,
+                                    chan::Receiver<chan::Sender<()>>)) {
+        use std::time::Duration;
+
+        // initialize client
+        let (mut client, client_r) = Client::new(url);
+        client.follow_all();
+        client.serve();
+
+        // initialize user interface
         unsafe { tb_init(); }
-        TUI {
-            results_offset: 0,
-            query: String::new(),
-        }
+        let tui = TUI { client: client, results_offset: 0, query: String::new() };
+        let tui_r = TUI::serve_events();
+
+        let tick_r = chan::tick(Duration::from_secs(1));
+        (tui, (client_r, tui_r, tick_r))
     }
 
-    pub fn run() -> chan::Receiver<RawEvent> {
+    pub fn serve_events() -> chan::Receiver<RawEvent> {
         let (s, r) = chan::async();
         thread::spawn(move || TUI::mainloop(s));
         r
@@ -61,20 +74,24 @@ impl TUI {
         }
     }
 
-    fn do_query(&self, client: &mut Client) {
+    fn do_query(&mut self) {
         let height = unsafe { tb_height() as usize };
         if self.query.len() < 1 {
             return;
         }
-        client.query_media(&self.query[1..], height * 10);
+        self.client.query_media(&self.query[1..], height * 10);
     }
 
-    pub fn handle_event(&mut self, client: &mut Client, event: RawEvent) -> Result<(), Error> {
+    pub fn handle_message_from_client(&mut self, message: &Json) -> Result<MessageType, ClientError> {
+        self.client.handle_message(message)
+    }
+
+    pub fn handle_event(&mut self, event: RawEvent) -> Result<(), Error> {
         match event.etype {
             TB_EVENT_KEY => if event.ch == 0 {
-                self.handle_input_key(event.key, client)
+                self.handle_input_key(event.key)
             } else {
-                self.handle_input_ch(event.ch, client)
+                self.handle_input_ch(event.ch)
             },
             TB_EVENT_RESIZE => unimplemented!(),
             TB_EVENT_MOUSE => unimplemented!(),
@@ -85,36 +102,36 @@ impl TUI {
         }
     }
 
-    fn handle_input_ch(&mut self, ch: u32, client: &mut Client) -> Result<(), Error> {
+    fn handle_input_ch(&mut self, ch: u32) -> Result<(), Error> {
         match ch {
-            47 | 58 => self.handle_input_cmdtypechar(ch, client),
-            33 ... 126 => self.handle_input_alphanum(ch, client),
+            47 | 58 => self.handle_input_cmdtypechar(ch),
+            33 ... 126 => self.handle_input_alphanum(ch),
             ch => Err(Error::Custom(format!("handling of ch {} is not implemented", ch)))
         }
     }
 
-    fn handle_input_key(&mut self, key: u16, client: &mut Client) -> Result<(), Error> {
+    fn handle_input_key(&mut self, key: u16) -> Result<(), Error> {
         match key {
-            TB_KEY_ENTER => self.handle_input_linefeed(key, client),
-            TB_KEY_SPACE => self.handle_input_alphanum(' ' as u32, client),
-            TB_KEY_BACKSPACE | TB_KEY_BACKSPACE2 => self.handle_input_backspace(key, client),
+            TB_KEY_ENTER => self.handle_input_linefeed(key),
+            TB_KEY_SPACE => self.handle_input_alphanum(' ' as u32),
+            TB_KEY_BACKSPACE | TB_KEY_BACKSPACE2 => self.handle_input_backspace(key),
             TB_KEY_CTRL_C => Err(Error::Quit),
-            TB_KEY_CTRL_U => self.handle_input_nak(key, client),
+            TB_KEY_CTRL_U => self.handle_input_nak(key),
             key => Err(Error::Custom(format!("handling of keycode {} is not implemented", key))),
         }
     }
 
-    fn handle_input_backspace(&mut self, _: u16, client: &mut Client) -> Result<(), Error> {
+    fn handle_input_backspace(&mut self, _: u16) -> Result<(), Error> {
         self.query.pop();
-        self.do_query(client);
+        self.do_query();
         Ok(())
     }
 
-    fn handle_input_linefeed(&mut self, _: u16, _: &mut Client) -> Result<(), Error> {
+    fn handle_input_linefeed(&mut self, _: u16) -> Result<(), Error> {
         Err(Error::Custom(format!("handle_input_linefeed is not implemented")))
     }
 
-    fn handle_input_nak(&mut self, _: u16, _: &mut Client) -> Result<(), Error> {
+    fn handle_input_nak(&mut self, _: u16) -> Result<(), Error> {
         if self.query.len() > 1 {
             self.query.truncate(1);
         } else {
@@ -123,7 +140,7 @@ impl TUI {
         Ok(())
     }
 
-    fn handle_input_cmdtypechar(&mut self, ch: u32, client: &mut Client) -> Result<(), Error> {
+    fn handle_input_cmdtypechar(&mut self, ch: u32) -> Result<(), Error> {
         if !self.query.is_empty() { return Ok(()); }
 
         if self.query.len() == 0 {
@@ -133,11 +150,11 @@ impl TUI {
                 _ => error!("unreachable"),
             }
         }
-        self.do_query(client);
+        self.do_query();
         Ok(())
     }
 
-    fn handle_input_alphanum(&mut self, input_ch: u32, client: &mut Client) -> Result<(), Error> {
+    fn handle_input_alphanum(&mut self, input_ch: u32) -> Result<(), Error> {
         let ch_option = char::from_u32(input_ch as u32);
         match ch_option {
             Some(ch) => {
@@ -146,7 +163,7 @@ impl TUI {
             },
             None => error!("unreachable")
         }
-        self.do_query(client);
+        self.do_query();
         Ok(())
     }
 
@@ -171,24 +188,24 @@ impl TUI {
         }
     }
 
-    pub fn draw(&mut self, client: &Client) {
+    pub fn draw(&mut self) {
         unsafe { tb_clear(); }
         if self.query.is_empty() {
-            // self.draw_current_requests_results(client);
+            self.draw_current_requests_results();
         } else {
-            self.draw_search_results(client);
+            self.draw_search_results();
         }
-        self.draw_query(client);
+        self.draw_query();
         unsafe { tb_present(); }
     }
 
-    fn draw_current_requests_results(&mut self, client: &Client) {
+    fn draw_current_requests_results(&mut self) {
         let (w, h) = self.get_size();
         let mut str_table: Vec<Vec<String>> = Vec::new();
 
         // first line shows currently playing song
         let mut queue_length = Duration::zero();
-        str_table.push(if let &Some(ref playing) = client.get_playing() {
+        str_table.push(if let &Some(ref playing) = self.client.get_playing() {
             let requested_by = String::from(unwrap_requested_by(&playing.requested_by));
             queue_length = queue_length + (playing.end_time - get_time());
             vec!(requested_by, playing.media.artist.clone(), playing.media.title.clone(),
@@ -198,7 +215,7 @@ impl TUI {
         });
 
         // rest shows the current request queue
-        if let &Some(ref requests) = client.get_requests() {
+        if let &Some(ref requests) = self.client.get_requests() {
             for request in requests.iter().skip(self.results_offset).take(h - 2) {
                 let requested_by = String::from(unwrap_requested_by(&request.by));
                 let media = &request.media;
@@ -215,12 +232,12 @@ impl TUI {
         self.draw_table(&str_table, &col_widths);
     }
 
-    fn draw_search_results(&mut self, client: &Client) {
+    fn draw_search_results(&mut self) {
         let (w, h) = self.get_size();
         let mut str_table: Vec<Vec<String>> = Vec::new();
 
 
-        for media in client.get_qm_results().iter().skip(self.results_offset).take(h - 1) {
+        for media in self.client.get_qm_results().iter().skip(self.results_offset).take(h - 1) {
             str_table.push(vec!(media.artist.clone(), media.title.clone()));
         }
 
@@ -240,7 +257,7 @@ impl TUI {
         }
     }
 
-    fn draw_query(&mut self, _: &Client) {
+    fn draw_query(&mut self) {
         // draw query field
         let (w, h) = self.get_size();
         unsafe {

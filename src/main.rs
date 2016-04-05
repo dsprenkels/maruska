@@ -2,14 +2,12 @@
 extern crate env_logger;
 extern crate libclient;
 #[macro_use] extern crate log;
+extern crate rustc_serialize;
 extern crate termbox_sys as termbox;
 extern crate time;
 
 mod tui;
 
-use std::time::Duration;
-
-use libclient::Client;
 use tui::{TUI, Error as TUIError};
 
 const URL: &'static str = "http://noordslet.science.ru.nl/api";
@@ -20,22 +18,17 @@ fn main() {
         panic!("Failed to initialize logger: {}", err);
     }
 
-    // initialize client
-    let (mut client, client_r) = Client::new(URL);
-    client.follow_all();
-    client.serve();
+    let (mut tui, event_receivers) = TUI::new(URL);
+    let (client_r, tui_r, tick_r) = event_receivers;
 
-    // initialize user interface
-    let mut tui = TUI::new();
-    let tui_r = TUI::run();
-
-    let tick = chan::tick(Duration::from_secs(1));
     loop {
         chan_select! {
             client_r.recv() -> message => {
-                if let Err(_) = client.handle_message(&message.unwrap()) {break}
+                if let Err(_) = tui.handle_message_from_client(&message.unwrap()) {
+                    break
+                }
             },
-            tui_r.recv() -> event => match tui.handle_event(&mut client, event.unwrap()) {
+            tui_r.recv() -> event => match tui.handle_event(event.unwrap()) {
                 Ok(_) => {},
                 Err(TUIError::Quit) => break,
                 Err(TUIError::Custom(s)) => {
@@ -43,9 +36,7 @@ fn main() {
                     panic!("{}", s)
                 }
             },
-            tick.recv() => {},
+            tick_r.recv() => {},
         }
-        tui.draw(&client);
-    }
-
-}
+        tui.draw();
+    }}
