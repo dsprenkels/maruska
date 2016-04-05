@@ -105,6 +105,9 @@ pub struct Client {
     /// The amount of results we want to have for this query
     qm_results_count: usize,
 
+    /// Are we done loading all the results?
+    qm_done: bool,
+
     /// Are we currently waiting for query results?
     waiting_for_qm_results: bool,
 
@@ -131,6 +134,7 @@ impl Client {
             qm_query: None,
             qm_token_and_count: (0, 0),
             qm_results_count: 0,
+            qm_done: true,
             waiting_for_qm_results: false,
             deferred_after_login: Vec::new()
         }, recv_message_r)
@@ -144,8 +148,8 @@ impl Client {
         &self.requests
     }
 
-    pub fn get_qm_results(&self) -> &Vec<Media> {
-        &self.qm_results
+    pub fn get_qm_results(&self) -> (&Vec<Media>, &bool) {
+        (&self.qm_results, &self.qm_done)
     }
 
     pub fn serve(&self) -> Vec<thread::JoinHandle<Result<(), CometError>>> {
@@ -266,6 +270,8 @@ impl Client {
            self.qm_results_count > self.qm_results.len() {
             // we need to do another request
             self.query_media_inner();
+        } else {
+            self.qm_done = true;
         }
         Ok(MessageType::QueryMediaResults)
     }
@@ -334,6 +340,7 @@ impl Client {
 
         self.qm_query = Some(String::from(query));
         self.qm_results_count = count;
+        self.qm_done = false;
         self.query_media_inner()
     }
 

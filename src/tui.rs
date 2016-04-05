@@ -1,5 +1,8 @@
 use std::char;
-use std::cmp::max;
+use std::cmp::{max, min};
+use std::collections::BTreeMap;
+use std::iter::{once, repeat};
+use std::iter::FromIterator;
 use std::thread;
 
 use chan;
@@ -26,6 +29,7 @@ pub enum Error {
 pub struct TUI {
     client: Client,
     results_offset: usize,
+    results_focus: usize,
     query: String,
 }
 
@@ -42,7 +46,12 @@ impl TUI {
 
         // initialize user interface
         unsafe { tb_init(); }
-        let tui = TUI { client: client, results_offset: 0, query: String::new() };
+        let tui = TUI {
+            client: client,
+            results_offset: 0,
+            results_focus: 0,
+            query: String::new()
+        };
         let tui_r = TUI::serve_events();
 
         let tick_r = chan::tick(Duration::from_secs(1));
@@ -82,6 +91,13 @@ impl TUI {
         self.client.query_media(&self.query[1..], height * 10);
     }
 
+    fn move_focus(&mut self, x: i32) {
+        if self.query.starts_with('/') {
+            let results = self.client.get_qm_results().0.len();
+            self.results_focus = min(results, max(0, self.results_focus as i32 + x) as usize);
+        }
+    }
+
     pub fn handle_message_from_client(&mut self, message: &Json) -> Result<MessageType, ClientError> {
         self.client.handle_message(message)
     }
@@ -111,7 +127,11 @@ impl TUI {
     }
 
     fn handle_input_key(&mut self, key: u16) -> Result<(), Error> {
+        // TODO Page {up, down} should self.results_offset -= (-)self.height()
+        //      and put the current focus at the entry closes to the new bounds
         match key {
+            TB_KEY_ARROW_UP => self.handle_arrow_up(),
+            TB_KEY_ARROW_DOWN => self.handle_arrow_down(),
             TB_KEY_ENTER => self.handle_input_linefeed(key),
             TB_KEY_SPACE => self.handle_input_alphanum(' ' as u32),
             TB_KEY_BACKSPACE | TB_KEY_BACKSPACE2 => self.handle_input_backspace(key),
@@ -119,6 +139,16 @@ impl TUI {
             TB_KEY_CTRL_U => self.handle_input_nak(key),
             key => Err(Error::Custom(format!("handling of keycode {} is not implemented", key))),
         }
+    }
+
+    fn handle_arrow_up(&mut self) -> Result<(), Error> {
+        self.move_focus(-1);
+        Ok(())
+    }
+
+    fn handle_arrow_down(&mut self) -> Result<(), Error> {
+        self.move_focus(1);
+        Ok(())
     }
 
     fn handle_input_backspace(&mut self, _: u16) -> Result<(), Error> {
@@ -167,16 +197,12 @@ impl TUI {
         Ok(())
     }
 
-    unsafe fn print(&self, x: i32, y: i32, fg: u16, bg: u16, s: &str) {
-        for (i, ch) in s.chars().enumerate() {
-            tb_change_cell(x+i as i32, y, ch as u32, fg, bg);
-        }
-    }
-
-    unsafe fn print_truncate(&self, x: i32, y: i32, fg: u16, bg: u16, s: &str, maxlen: usize,
+    unsafe fn print(&self, x: i32, y: i32, fg: u16, bg: u16, s: &str, maxlen: usize,
                              trunc_fg: u16, trunc_bg: u16, trunc_s: &str) {
         if s.len() < maxlen || s.is_empty() {
-            self.print(x, y, fg, bg, s);
+            for (i, ch) in s.chars().chain(repeat(' ')).take(maxlen).enumerate() {
+                tb_change_cell(x+i as i32, y, ch as u32, fg, bg);
+            }
         } else {
             let print_len = max(maxlen - trunc_s.len(), 0);
             for (i, ch) in s.chars().take(print_len).enumerate() {
@@ -190,10 +216,10 @@ impl TUI {
 
     pub fn draw(&mut self) {
         unsafe { tb_clear(); }
-        if self.query.is_empty() {
-            self.draw_current_requests_results();
-        } else {
+        if self.query.starts_with('/') {
             self.draw_search_results();
+        } else {
+            self.draw_current_requests_results();
         }
         self.draw_query();
         unsafe { tb_present(); }
@@ -229,29 +255,42 @@ impl TUI {
         let col_widths = fit_columns(&str_table, &[1f32, 4f32, 4f32, 1f32], w as usize);
 
         // do the actual drawing
-        self.draw_table(&str_table, &col_widths);
+        self.draw_table(&str_table, &col_widths, once(0));
     }
 
     fn draw_search_results(&mut self) {
+        // TODO Calculate a range to print here, based on the value of
+        //      self.results_focus and results.len() (and self.get_height())
+        //      and maybe update self.results_offset accordingly
+        // TODO Show blue tildes '~' (as in vim) at the end of the range.
+        //      Futhermore, allow scrolling past the EOF
         let (w, h) = self.get_size();
         let mut str_table: Vec<Vec<String>> = Vec::new();
 
-
-        for media in self.client.get_qm_results().iter().skip(self.results_offset).take(h - 1) {
+        let (results, qm_done) = self.client.get_qm_results();
+        for media in results.iter().skip(self.results_offset).take(h - 1) {
             str_table.push(vec!(media.artist.clone(), media.title.clone()));
         }
 
         let col_widths = fit_columns(&str_table, &[1f32, 1f32], w as usize);
-        self.draw_table(&str_table, &col_widths);
+        self.draw_table(&str_table, &col_widths, once(self.results_focus));
     }
 
-    fn draw_table(&self, str_table: &Vec<Vec<String>>, col_widths: &Vec<usize>) {
+    fn draw_table<T>(&self, str_table: &Vec<Vec<String>>, col_widths: &Vec<usize>,
+                  selected: T)
+        where T : IntoIterator<Item=usize> {
+        let selected = BTreeMap::from_iter(selected.into_iter().zip(repeat(())));
         for (y, row) in str_table.iter().enumerate() {
+            let (fg, fg2, bg) = if selected.contains_key(&y) {
+                (TB_BLACK, TB_BLUE, TB_WHITE)
+            } else {
+                (TB_DEFAULT, TB_BLUE, TB_BLACK)
+            };
             unsafe {
                 for (j, cell) in row.iter().enumerate() {
                     let x = col_widths.iter().take(j).fold(0, |a, b| a + b);
                     let maxlen = col_widths[j];
-                    self.print_truncate(x as i32, y as i32, 0, 0, cell, maxlen, 0, 0, "$");
+                    self.print(x as i32, y as i32, fg, bg, cell, maxlen, fg2, bg, "$");
                 }
             }
         }
@@ -261,7 +300,7 @@ impl TUI {
         // draw query field
         let (w, h) = self.get_size();
         unsafe {
-            self.print_truncate(0, (h-1) as i32, 0, 0, &self.query, w as usize, 0, 0, "...");
+            self.print(0, (h-1) as i32, 0, 0, &self.query, w as usize, 0, 0, "...");
         }
     }
 
