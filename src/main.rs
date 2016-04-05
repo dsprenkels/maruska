@@ -29,8 +29,8 @@ fn main() {
     let mut tui = TUI::new();
     let tui_r = TUI::run();
 
+    let tick = chan::tick(Duration::from_secs(1));
     loop {
-        let timeout = chan::after(Duration::from_secs(1));
         chan_select! {
             client_r.recv() -> message => {
                 if let Err(_) = client.handle_message(&message.unwrap()) {break}
@@ -43,7 +43,7 @@ fn main() {
                     panic!("{}", s)
                 }
             },
-            timeout.recv() => {},
+            tick.recv() => {},
         }
         tui.draw(&client);
     }
