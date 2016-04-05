@@ -141,6 +141,10 @@ impl Client {
         &self.requests
     }
 
+    pub fn get_qm_results(&self) -> &Vec<Media> {
+        &self.qm_results
+    }
+
     pub fn serve(&self) -> Vec<thread::JoinHandle<Result<(), CometError>>> {
         comet_serve(&self.channel)
     }
@@ -358,9 +362,11 @@ impl Client {
 
     fn qm_chunk_size(&self) -> usize {
         match self.qm_results.len() {
-            x if x <= 200 => 100, // not too much lag
-            x if x <= 500 => 1000 - x, // request up till 1000
-            _ => 1000 // just request a thousand
+            x if x <= 50 => 25, // not too much lag
+            x if x <= 100 => 50,
+            x if x <= 200 => 100,
+            x if x <= 500 => 1000 - x,
+            _ => 1000
         }
     }
 

@@ -7,8 +7,9 @@ extern crate time;
 
 mod tui;
 
-use libclient::Client;
 use std::time::Duration;
+
+use libclient::Client;
 use tui::{TUI, Error as TUIError};
 
 const URL: &'static str = "http://noordslet.science.ru.nl/api";

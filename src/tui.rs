@@ -8,6 +8,15 @@ use time::{Duration, get_time};
 
 use libclient::Client;
 
+macro_rules! cleanup {
+    ( $ret:expr ) => {
+        {
+            unsafe { tb_shutdown() };
+            $ret
+        }
+    }
+}
+
 pub enum Error {
     Custom(String),
     Quit,
@@ -54,7 +63,10 @@ impl TUI {
 
     fn do_query(&self, client: &mut Client) {
         let height = unsafe { tb_height() as usize };
-        client.query_media(&self.query, height * 10);
+        if self.query.len() < 1 {
+            return;
+        }
+        client.query_media(&self.query[1..], height * 10);
     }
 
     pub fn handle_event(&mut self, client: &mut Client, event: RawEvent) -> Result<(), Error> {
@@ -161,13 +173,17 @@ impl TUI {
 
     pub fn draw(&mut self, client: &Client) {
         unsafe { tb_clear(); }
-        self.draw_results(client);
+        if self.query.is_empty() {
+            // self.draw_current_requests_results(client);
+        } else {
+            self.draw_search_results(client);
+        }
         self.draw_query(client);
         unsafe { tb_present(); }
     }
 
-    fn draw_results(&mut self, client: &Client) {
-        let (w, h) = unsafe { (tb_width() as usize, tb_height() as usize) };
+    fn draw_current_requests_results(&mut self, client: &Client) {
+        let (w, h) = self.get_size();
         let mut str_table: Vec<Vec<String>> = Vec::new();
 
         // first line shows currently playing song
@@ -195,12 +211,24 @@ impl TUI {
         // get optimal column widths
         let col_widths = fit_columns(&str_table, &[1f32, 4f32, 4f32, 1f32], w as usize);
 
-        if col_widths.len() != 4 {
-            unsafe { tb_shutdown() };
-            panic!("col_widths.len() != 4 (is {})", col_widths.len());
+        // do the actual drawing
+        self.draw_table(&str_table, &col_widths);
+    }
+
+    fn draw_search_results(&mut self, client: &Client) {
+        let (w, h) = self.get_size();
+        let mut str_table: Vec<Vec<String>> = Vec::new();
+
+
+        for media in client.get_qm_results().iter().skip(self.results_offset).take(h - 1) {
+            str_table.push(vec!(media.artist.clone(), media.title.clone()));
         }
 
-        // do the actual drawing
+        let col_widths = fit_columns(&str_table, &[1f32, 1f32], w as usize);
+        self.draw_table(&str_table, &col_widths);
+    }
+
+    fn draw_table(&self, str_table: &Vec<Vec<String>>, col_widths: &Vec<usize>) {
         for (y, row) in str_table.iter().enumerate() {
             unsafe {
                 for (j, cell) in row.iter().enumerate() {
@@ -214,10 +242,22 @@ impl TUI {
 
     fn draw_query(&mut self, _: &Client) {
         // draw query field
+        let (w, h) = self.get_size();
         unsafe {
-            let (w, h) = (tb_width(), tb_height());
-            self.print_truncate(0, h-1, 0, 0, &self.query, w as usize, 0, 0, "...");
+            self.print_truncate(0, (h-1) as i32, 0, 0, &self.query, w as usize, 0, 0, "...");
         }
+    }
+
+    fn get_width(&self) -> usize {
+        unsafe { tb_width() as usize }
+    }
+
+    fn get_height(&self) -> usize {
+        unsafe { tb_height() as usize }
+    }
+
+    fn get_size(&self) -> (usize, usize) {
+        (self.get_width(), self.get_height())
     }
 }
 
@@ -245,10 +285,9 @@ fn format_duration(d: Duration) -> String {
 }
 
 fn fit_columns(rows: &Vec<Vec<String>>, expand_factors: &[f32], fit_width: usize) -> Vec<usize> {
-    assert!(!rows.is_empty());
-
+    let col_count = expand_factors.len();
     let mut cols = {
-        let (row_count, col_count) = (rows.len(), rows[0].len());
+        let row_count = rows.len();
         let mut cols = Vec::with_capacity(col_count);
         for _ in 0..col_count {
             cols.push(Vec::with_capacity(row_count));
@@ -263,21 +302,38 @@ fn fit_columns(rows: &Vec<Vec<String>>, expand_factors: &[f32], fit_width: usize
 
     assert!(cols.len() > 0);
     for mut col in &mut cols {
-        assert!(col.len() > 0);
         col.sort()
     }
 
     let mut search_vec: Vec<Vec<&usize>> = Vec::with_capacity(rows.len());
     for i in 0..rows.len() {
-        search_vec.push((0..3).map(|j| &cols[j][i]).collect());
+        search_vec.push((0..col_count).map(|j| {
+            if let Some(val) = cols.get(j).and_then(|x| x.get(i)) {
+                val
+            } else {
+                cleanup!(panic!("array indexing failure, array: {:?}", cols));
+            }
+        }).collect());
     }
 
     let col_widths: Vec<usize> = match search_vec.binary_search_by(|row| {
         row.iter().fold(0, |a, b| a + *b).cmp(&fit_width)
     }) {
-        Ok(i) => return cols.iter().map(|x| x[i]).collect(),
-        Err(0) => cols.iter().map(|x| x[0]).collect(), // not enough space
-        Err(i) => cols.iter().map(|x| x[i-1]).collect(), // there is space left
+        Ok(i) => return cols.iter().map(|x| {
+            if let Some(val) = x.get(i) {
+                *val
+            } else {
+                cleanup!(panic!("array indexing failure"));
+            }
+        }).collect(),
+        Err(0) => cols.iter().map(|_| 0).collect(), // not enough space
+        Err(i) => cols.iter().map(|x| {
+            if let Some(val) = x.get(i-1) {
+                *val
+            } else {
+                cleanup!(panic!("array indexing failure"));
+            }
+        }).collect(), // there is space left
     };
 
     let space_left = fit_width - col_widths.iter().fold(0, |a, b| a + b);
