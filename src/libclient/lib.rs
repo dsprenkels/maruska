@@ -71,8 +71,9 @@ pub struct Client {
     /// What the current requests are
     requests: Option<Vec<Request>>,
 
-    /// When we get an access key, call the following callbacks (if present)
-    access_key_callback: Option<Box<Fn(&str) -> ()>>,
+    /// Store the access key for the users login session, if we have retrieved it from
+    /// the server.
+    access_key: Option<String>,
 
     /// Some login token acquired from the remote server
     login_token: Option<String>,
@@ -118,7 +119,7 @@ impl Client {
             send_message_s: send_message_s,
             playing: None,
             requests: None,
-            access_key_callback: None,
+            access_key: None,
             login_token: None,
             logged_in: false,
             waiting_for_login_token: false,
@@ -221,16 +222,13 @@ impl Client {
     }
 
     fn handle_logged_in(&mut self, msg: &Json) -> Result<MessageType, ClientError> {
-        let access_key = try!(msg.as_object()
+        self.waiting_for_login = false;
+        self.logged_in = true;
+        self.access_key = Some(try!(msg.as_object()
             .and_then(|x| x.get("accessKey"))
             .and_then(|x| x.as_string())
             .ok_or_else(|| CometError::MalformedResponse(("found no accessKey string", msg.clone())))
-        );
-        self.waiting_for_login = false;
-        self.logged_in = true;
-        for callback in self.access_key_callback.iter() {
-            callback(access_key);
-        }
+        ).to_owned());
 
         let mut messages = Vec::with_capacity(self.deferred_after_login.len());
         messages.append(&mut self.deferred_after_login);
@@ -295,9 +293,7 @@ impl Client {
         self.do_login_inner(username, password, false)
     }
 
-    pub fn do_login_accesskey(&mut self, username: &str, access_key: &str,
-                          callback: Option<Box<Fn(&str) -> ()>>) {
-        self.access_key_callback = callback;
+    pub fn do_login_accesskey(&mut self, username: &str, access_key: &str) {
         self.do_login_inner(username, access_key, true)
     }
 
