@@ -389,15 +389,3 @@ fn md5(p: &str) -> String {
     }
     c
 }
-
-pub fn it_works() {
-    // let mut client = Client::new("http://192.168.1.100/api");
-    let (mut client, client_rx) = Client::new("http://noordslet.science.ru.nl/api");
-    client.follow_all();
-    client.serve();
-
-    loop {
-        let message = client_rx.recv().unwrap();
-        client.handle_message(&message).unwrap();
-    }
-}
