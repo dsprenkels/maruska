@@ -298,8 +298,8 @@ impl Client {
         self.send_message(&b)
     }
 
-    pub fn do_login(&mut self, username: &str, password: &str) {
-        self.do_login_inner(username, password, false)
+    pub fn do_login(&mut self, username: &str, password_hash: &str) {
+        self.do_login_inner(username, password_hash, false)
     }
 
     pub fn do_login_accesskey(&mut self, username: &str, access_key: &str) {
@@ -309,18 +309,10 @@ impl Client {
     pub fn do_login_inner(&mut self, username: &str, secret: &str, using_access_key: bool) {
         if let Some(ref login_token) = self.login_token {
             self.deferred_login = None;
-            let message_type = match using_access_key {
-                true => "login_accessKey",
-                false => "login"
-            };
-            let hash = match using_access_key {
-                true => md5(&format!("{}{}", secret, login_token)),
-                false => md5(&format!("{}{}", md5(secret), login_token))
-            };
             let b = make_json_btreemap!(
-                "type" => message_type,
+                "type" => if using_access_key {"login_accessKey"} else {"login"},
                 "username" => username,
-                "hash" => hash
+                "hash" => md5(&format!("{}{}", secret, login_token))
             );
             self.waiting_for_login = true;
             self.send_message_s.send(b.to_json())
@@ -386,7 +378,7 @@ impl Client {
     }
 }
 
-fn md5(p: &str) -> String {
+pub fn md5(p: &str) -> String {
     use openssl::crypto::hash::{hash, Type};
     use std::fmt::Write;
     let mut c = String::with_capacity(MD5_HASH_LENGTH);

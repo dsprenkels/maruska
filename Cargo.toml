@@ -9,10 +9,12 @@ docopt = "0.6"
 env_logger = "0.3.2"
 libclient = { path = "src/libclient/" }
 log = "0.3"
+regex = "0.1"
 rustc-serialize = "0.3"
 strsim = "0.4"
 termbox-sys = "0.2"
 time = "0.1"
+lazy_static = "0.1"
 
 [profile.release]
 lto = true

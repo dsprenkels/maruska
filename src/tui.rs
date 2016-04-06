@@ -9,8 +9,9 @@ use chan;
 use rustc_serialize::json::Json;
 use termbox::*;
 use time::{Duration, get_time};
+use regex::Regex;
 
-use libclient::{Client, ClientError, MessageType};
+use libclient::{Client, ClientError, md5, MessageType};
 
 macro_rules! cleanup {
     ( $ret:expr ) => {
@@ -24,7 +25,7 @@ macro_rules! cleanup {
 macro_rules! cleanup_if {
     ( $cond:expr, $ret:expr ) => {
         {
-            if !$cond {
+            if $cond {
                 unsafe { tb_shutdown() };
                 $ret
             }
@@ -47,8 +48,15 @@ pub enum Error {
     Quit,
 }
 
+enum Secret {
+    AccessKey(String),
+    PasswordHash(String),
+}
+
 pub struct TUI {
     client: Client,
+    username: Option<String>,
+    secret: Option<Secret>,
     results_offset: usize,
     results_focus: usize,
     query: String,
@@ -70,6 +78,8 @@ impl TUI {
         unsafe { tb_init(); }
         let tui = TUI {
             client: client,
+            username: None,
+            secret: None,
             results_offset: 0,
             results_focus: 0,
             query: String::new()
@@ -105,12 +115,71 @@ impl TUI {
         }
     }
 
+    fn try_login(&mut self) -> bool {
+        match (&self.username, &self.secret) {
+            (&Some(ref username), &Some(Secret::PasswordHash(ref secret))) =>
+                self.client.do_login(username, secret),
+            (&Some(ref username), &Some(Secret::AccessKey(ref secret))) =>
+                self.client.do_login_accesskey(username, secret),
+            _ => return false,
+        };
+        true
+        // TODO show some visual feedback "logging in..."
+    }
+
     fn do_query(&mut self) {
         let height = unsafe { tb_height() as usize };
-        if self.query.len() < 1 {
+        if !self.query.starts_with('/') {
             return;
         }
         self.client.query_media(&self.query[1..], height * 10);
+    }
+
+    fn do_request(&mut self) {
+        clean_assert!(self.query.starts_with('/'));
+        let media_key = {
+            let ref results = self.client.get_qm_results().0;
+            if results.len() == 0 { return; }
+            results[self.results_focus].key.clone()
+        };
+        self.client.do_request_from_key(&media_key);
+        self.query.clear();
+    }
+
+    fn do_command(&mut self) {
+        let split_command: Vec<String> = {
+            clean_assert!(self.query.starts_with(':'));
+            self.query[1..].splitn(2, char::is_whitespace).map(|x| x.to_string()).collect()
+        };
+        match (split_command.get(0).map(|x| &x[..]), split_command.get(1)) {
+            (Some("username"), rest) => self.do_command_username(rest),
+            (Some("password"), rest) => self.do_command_password(rest),
+            (Some("login"), rest) => self.do_command_login(rest),
+            (Some(command_type), _) => cleanup!(panic!("unsuppoted command type: {}", command_type)),
+            (None, _) => cleanup!(unreachable!()),
+        }
+    }
+
+    fn do_command_username(&mut self, username_option: Option<&String>) {
+        let username = username_option.unwrap_or_else(|| cleanup!(panic!("no username provided")));
+        self.username = Some(username.to_string());
+        // TODO show some visual feedback "username set to {}"
+        self.query.clear();
+        if !self.try_login() {
+            self.query.push_str(":password ");
+        }
+    }
+
+    fn do_command_password(&mut self, password_option: Option<&String>) {
+        let password = password_option.unwrap_or_else(|| cleanup!(panic!("no password provided")));
+        self.secret = Some(Secret::PasswordHash(md5(&password)));
+        // TODO show some visual feedback "password set"
+        self.try_login();
+    }
+
+    fn do_command_login(&mut self, rest_option: Option<&String>) {
+        clean_assert!(rest_option == None);
+        cleanup_if!(!self.try_login(), panic!("no credentials available"))
     }
 
     fn move_focus(&mut self, x: isize) {
@@ -178,7 +247,7 @@ impl TUI {
         match key {
             TB_KEY_ARROW_UP => self.handle_arrow_up(),
             TB_KEY_ARROW_DOWN => self.handle_arrow_down(),
-            TB_KEY_ENTER => self.handle_input_linefeed(key),
+            TB_KEY_ENTER => self.handle_input_submit(key),
             TB_KEY_SPACE => self.handle_input_alphanum(' ' as u32),
             TB_KEY_BACKSPACE | TB_KEY_BACKSPACE2 => self.handle_input_backspace(key),
             TB_KEY_CTRL_C => Err(Error::Quit),
@@ -203,8 +272,14 @@ impl TUI {
         Ok(())
     }
 
-    fn handle_input_linefeed(&mut self, _: u16) -> Result<(), Error> {
-        unimplemented!()
+    fn handle_input_submit(&mut self, _: u16) -> Result<(), Error> {
+        match &self.query.chars().nth(0) {
+            &Some('/') => self.do_request(),
+            &Some(':') => self.do_command(),
+            &Some(_) => cleanup!(unimplemented!()),
+            &None => {}, // do nothing
+        }
+        Ok(())
     }
 
     fn handle_input_nak(&mut self, _: u16) -> Result<(), Error> {
