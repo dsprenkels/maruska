@@ -24,8 +24,9 @@ fn main() {
     loop {
         chan_select! {
             client_r.recv() -> message => {
-                if let Err(_) = tui.handle_message_from_client(&message.unwrap()) {
-                    break
+                if let Err(err) = tui.handle_message_from_client(&message.unwrap()) {
+                    drop(tui);
+                    panic!("{}", err)
                 }
             },
             tui_r.recv() -> event => match tui.handle_event(event.unwrap()) {

@@ -93,13 +93,22 @@ impl TUI {
 
     fn move_focus(&mut self, x: i32) {
         if self.query.starts_with('/') {
-            let results = self.client.get_qm_results().0.len();
-            self.results_focus = min(results, max(0, self.results_focus as i32 + x) as usize);
+            self.move_results_focus(x)
         }
     }
 
-    pub fn handle_message_from_client(&mut self, message: &Json) -> Result<MessageType, ClientError> {
-        self.client.handle_message(message)
+    fn move_results_focus(&mut self, x: i32) {
+        let max_index = self.client.get_qm_results().0.len().saturating_sub(1);
+        self.results_focus = min(max_index, max(0, self.results_focus as i32 + x) as usize);
+    }
+
+    pub fn handle_message_from_client(&mut self, message: &Json) -> Result<(), ClientError> {
+        self.client.handle_message(message).map(|x| match x {
+            MessageType::QueryMediaResults => {
+                self.move_results_focus(0) // reinit focus inside the new bounds
+            },
+            _ => {},
+        })
     }
 
     pub fn handle_event(&mut self, event: RawEvent) -> Result<(), Error> {
