@@ -10,7 +10,7 @@ mod tui;
 
 use tui::{TUI, Error as TUIError};
 
-const URL: &'static str = "http://noordslet.science.ru.nl/api";
+const URL: &'static str = "http://10.1.2.3/api";
 
 fn main() {
     // initialize logger
