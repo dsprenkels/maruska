@@ -37,6 +37,7 @@ impl TUI {
     pub fn new(url: &str) -> (TUI, (chan::Receiver<Json>,
                                     chan::Receiver<RawEvent>,
                                     chan::Receiver<chan::Sender<()>>)) {
+        // shadow the `Duration` from the one of the `time` crate
         use std::time::Duration;
 
         // initialize client
