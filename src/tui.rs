@@ -22,7 +22,6 @@ macro_rules! cleanup {
 }
 
 pub enum Error {
-    Custom(String),
     Quit,
 }
 
@@ -132,7 +131,7 @@ impl TUI {
         match ch {
             47 | 58 => self.handle_input_cmdtypechar(ch),
             33 ... 126 => self.handle_input_alphanum(ch),
-            ch => Err(Error::Custom(format!("handling of ch {} is not implemented", ch)))
+            ch => unimplemented!(),
         }
     }
 
@@ -147,7 +146,7 @@ impl TUI {
             TB_KEY_BACKSPACE | TB_KEY_BACKSPACE2 => self.handle_input_backspace(key),
             TB_KEY_CTRL_C => Err(Error::Quit),
             TB_KEY_CTRL_U => self.handle_input_nak(key),
-            key => Err(Error::Custom(format!("handling of keycode {} is not implemented", key))),
+            key => unimplemented!(),
         }
     }
 
@@ -168,7 +167,7 @@ impl TUI {
     }
 
     fn handle_input_linefeed(&mut self, _: u16) -> Result<(), Error> {
-        Err(Error::Custom(format!("handle_input_linefeed is not implemented")))
+        unimplemented!()
     }
 
     fn handle_input_nak(&mut self, _: u16) -> Result<(), Error> {

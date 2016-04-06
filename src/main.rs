@@ -30,12 +30,8 @@ fn main() {
                 }
             },
             tui_r.recv() -> event => match tui.handle_event(event.unwrap()) {
-                Ok(_) => {},
+                Ok(()) => {},
                 Err(TUIError::Quit) => break,
-                Err(TUIError::Custom(s)) => {
-                    drop(tui);
-                    panic!("{}", s)
-                }
             },
             tick_r.recv() => {},
         }
