@@ -21,6 +21,28 @@ macro_rules! cleanup {
     }
 }
 
+macro_rules! cleanup_if {
+    ( $cond:expr, $ret:expr ) => {
+        {
+            if !$cond {
+                unsafe { tb_shutdown() };
+                $ret
+            }
+        }
+    }
+}
+
+macro_rules! clean_assert {
+    ( $cond:expr $(, $rest:expr )* ) => {
+        {
+            if !$cond {
+                unsafe { tb_shutdown() };
+                assert!($cond $(, $rest)* );
+            }
+        }
+    }
+}
+
 pub enum Error {
     Quit,
 }
@@ -91,15 +113,30 @@ impl TUI {
         self.client.query_media(&self.query[1..], height * 10);
     }
 
-    fn move_focus(&mut self, x: i32) {
+    fn move_focus(&mut self, x: isize) {
         if self.query.starts_with('/') {
             self.move_results_focus(x)
         }
     }
 
-    fn move_results_focus(&mut self, x: i32) {
+    fn move_results_focus(&mut self, x: isize) {
+        fn bounded<T: Ord>(v1: T, v2: T, v3: T) -> T {
+            max(v1, min(v2, v3))
+        }
         let max_index = self.client.get_qm_results().0.len().saturating_sub(1);
-        self.results_focus = min(max_index, max(0, self.results_focus as i32 + x) as usize);
+        let h = if let Some(h) = self.get_height().checked_sub(1) {
+            h // height of the results window
+        } else {
+            cleanup!(panic!("viewport height is too small"));
+        };
+        let new_results_focus = if x >= 0 {
+            (self.results_focus).saturating_add(x as usize)
+        } else {
+            (self.results_focus).saturating_sub(-x as usize)
+        };
+        self.results_focus = bounded(0, new_results_focus, max_index);
+        self.results_offset = bounded(self.results_focus.saturating_sub(h-1),
+                                      self.results_offset, self.results_focus);
     }
 
     pub fn handle_message_from_client(&mut self, message: &Json) -> Result<(), ClientError> {
@@ -282,7 +319,7 @@ impl TUI {
         }
 
         let col_widths = fit_columns(&str_table, &[1f32, 1f32], w as usize);
-        self.draw_table(&str_table, &col_widths, once(self.results_focus));
+        self.draw_table(&str_table, &col_widths, once(self.results_focus - self.results_offset));
     }
 
     fn draw_table<T>(&self, str_table: &Vec<Vec<String>>, col_widths: &Vec<usize>,
@@ -350,6 +387,8 @@ fn format_duration(d: Duration) -> String {
 }
 
 fn fit_columns(rows: &Vec<Vec<String>>, expand_factors: &[f32], fit_width: usize) -> Vec<usize> {
+    // TODO do not change expansion when going from a state where everything 'just' fits,
+    //      to a new state where everything fits
     let col_count = expand_factors.len();
     let mut cols = {
         let row_count = rows.len();
