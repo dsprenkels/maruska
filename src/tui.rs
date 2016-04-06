@@ -387,8 +387,6 @@ fn format_duration(d: Duration) -> String {
 }
 
 fn fit_columns(rows: &Vec<Vec<String>>, expand_factors: &[f32], fit_width: usize) -> Vec<usize> {
-    // TODO do not change expansion when going from a state where everything 'just' fits,
-    //      to a new state where everything fits
     let col_count = expand_factors.len();
     let mut cols = {
         let row_count = rows.len();
@@ -430,7 +428,12 @@ fn fit_columns(rows: &Vec<Vec<String>>, expand_factors: &[f32], fit_width: usize
                 cleanup!(panic!("array indexing failure"));
             }
         }).collect(),
-        Err(0) => cols.iter().map(|_| 0).collect(), // not enough space
+        Err(0) => cols.iter().map(|_|
+            0
+        ).collect(), // not enough space
+        Err(i) if i == search_vec.len() => cols.iter().map(|_|
+            0
+        ).collect(), // enough space for all rows
         Err(i) => cols.iter().map(|x| {
             if let Some(val) = x.get(i-1) {
                 *val
