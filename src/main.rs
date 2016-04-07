@@ -7,7 +7,9 @@ extern crate regex;
 extern crate rustc_serialize;
 extern crate termbox_sys as termbox;
 extern crate time;
+extern crate toml;
 
+mod store;
 mod tui;
 
 use tui::{TUI, Error as TUIError};

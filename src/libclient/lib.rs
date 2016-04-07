@@ -8,7 +8,7 @@ extern crate time;
 mod comet;
 pub mod media;
 
-use std::collections::BTreeMap;
+use std::collections::HashMap;
 use std::fmt;
 use std::thread;
 
@@ -20,9 +20,9 @@ use media::{Media, Playing, Request};
 
 const MD5_HASH_LENGTH: usize = 32;
 
-macro_rules! make_json_btreemap {
+macro_rules! make_json_hashmap {
     ( $( $key:expr => $val:expr ),* ) => {{
-        let mut b = BTreeMap::new();
+        let mut b = HashMap::new();
         $(
             b.insert(String::from($key), $val.to_json());
         )*
@@ -284,7 +284,7 @@ impl Client {
         for x in &which[..] {
             assert!(x == "playing" || x == "requests");
         }
-        let b = make_json_btreemap!(
+        let b = make_json_hashmap!(
             "type" => "follow",
             "which" => which
         );
@@ -293,7 +293,7 @@ impl Client {
 
 
     pub fn request_login_token(&mut self) {
-        let b = make_json_btreemap!("type" => "request_login_token");
+        let b = make_json_hashmap!("type" => "request_login_token");
         self.waiting_for_login_token = true;
         self.send_message(&b)
     }
@@ -309,7 +309,7 @@ impl Client {
     pub fn do_login_inner(&mut self, username: &str, secret: &str, using_access_key: bool) {
         if let Some(ref login_token) = self.login_token {
             self.deferred_login = None;
-            let b = make_json_btreemap!(
+            let b = make_json_hashmap!(
                 "type" => if using_access_key {"login_accessKey"} else {"login"},
                 "username" => username,
                 "hash" => md5(&format!("{}{}", secret, login_token))
@@ -347,7 +347,7 @@ impl Client {
         // requests more than `count` results, we do them in subsequent requests.
         self.qm_token_and_count.1 = min(self.qm_results_count - skip, self.qm_chunk_size());
 
-        let b = make_json_btreemap!(
+        let b = make_json_hashmap!(
             "type" => "query_media",
             "query" => self.qm_query,
             "token" => self.qm_token_and_count.0,
@@ -373,7 +373,7 @@ impl Client {
     }
 
     pub fn do_request_from_key(&mut self, key: &str) {
-        let b = make_json_btreemap!("type" => "request", "mediaKey" => key);
+        let b = make_json_hashmap!("type" => "request", "mediaKey" => key);
         self.send_message_after_login(&b)
     }
 }

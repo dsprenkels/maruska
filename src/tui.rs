@@ -1,6 +1,6 @@
 use std::char;
 use std::cmp::{max, min};
-use std::collections::BTreeMap;
+use std::collections::hash_set::HashSet;
 use std::iter::{once, repeat};
 use std::iter::FromIterator;
 use std::thread;
@@ -400,9 +400,9 @@ impl TUI {
     fn draw_table<T>(&self, str_table: &Vec<Vec<String>>, col_widths: &Vec<usize>,
                   selected: T)
         where T : IntoIterator<Item=usize> {
-        let selected = BTreeMap::from_iter(selected.into_iter().zip(repeat(())));
+        let selected: HashSet<usize> = HashSet::from_iter(selected.into_iter());
         for (y, row) in str_table.iter().enumerate() {
-            let (fg, fg2, bg) = if selected.contains_key(&y) {
+            let (fg, fg2, bg) = if selected.contains(&y) {
                 (TB_BLACK, TB_BLUE, TB_WHITE)
             } else {
                 (TB_DEFAULT, TB_BLUE, TB_BLACK)
