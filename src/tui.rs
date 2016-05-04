@@ -419,8 +419,13 @@ impl TUI {
     fn draw_query(&mut self) {
         // draw query field
         let (w, h) = self.get_size();
+        let query = if self.query.starts_with(":password ") {
+            format!(":password {}", self.query.chars().skip(10).map(|_| '*').collect::<String>())
+        } else {
+            self.query.clone()
+        };
         unsafe {
-            self.print(0, (h-1) as i32, 0, 0, &self.query, w as usize, 0, 0, "...");
+            self.print(0, (h-1) as i32, 0, 0, &query, w as usize, 0, 0, "...");
         }
     }
 
