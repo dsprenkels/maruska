@@ -1,11 +1,12 @@
-use std::io::{Error as IOError, Read, Write};
 use std::collections::{BTreeMap, HashMap};
+use std::io::{Error as IOError, Read, Write};
 use std::iter::FromIterator;
 
-use rustc_serialize::{Decodable, Encodable};
+use rustc_serialize::Encodable;
 use toml::{encode, Parser, ParserError, Value};
 
 
+#[derive(Debug)]
 enum StoreError {
     IO(IOError),
     Parser(Vec<ParserError>)
@@ -23,8 +24,8 @@ impl From<Vec<ParserError>> for StoreError {
     }
 }
 
-trait Store : Decodable + Encodable {
-    fn load<T, U>(self, reader: &mut Read) -> Result<T, StoreError>
+trait Store where Self : Encodable + Sized {
+    fn load<T>(reader: &mut Read) -> Result<T, StoreError>
         where T : FromIterator<(String, Value)> {
         let mut s = String::new();
         try!(reader.read_to_string(&mut s));
@@ -39,8 +40,13 @@ trait Store : Decodable + Encodable {
     }
 }
 
-impl<T> Store for HashMap<String, T>
-    where T : Decodable + Encodable {}
+impl Store for BTreeMap<String, Value> {}
+impl Store for HashMap<String, Value> {}
 
-impl<T> Store for BTreeMap<String, T>
-    where T : Decodable + Encodable {}
+
+#[test]
+fn test() {
+    let input = r#"key = "value""#;
+    BTreeMap::load::<BTreeMap<String, Value>>(&mut input.as_bytes()).unwrap();
+    HashMap::load::<HashMap<String, Value>>(&mut input.as_bytes()).unwrap();
+}

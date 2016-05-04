@@ -9,7 +9,6 @@ use chan;
 use rustc_serialize::json::Json;
 use termbox::*;
 use time::{Duration, get_time};
-use regex::Regex;
 
 use libclient::{Client, ClientError, md5, MessageType};
 
