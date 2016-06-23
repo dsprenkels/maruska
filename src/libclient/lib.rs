@@ -45,6 +45,11 @@ pub enum ClientError {
     Comet(CometError)
 }
 
+#[derive(Debug)]
+pub enum RequestStatus {
+    Ok, Deferred
+}
+
 impl fmt::Display for ClientError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "client error: ({})", self)
@@ -160,11 +165,13 @@ impl Client {
         self.send_message_s.send(obj.to_json())
     }
 
-    fn send_message_after_login<T: ToJson>(&mut self, obj: &T) {
+    fn send_message_after_login<T: ToJson>(&mut self, obj: &T) -> RequestStatus {
         if self.logged_in {
-            self.send_message(obj)
+            self.send_message(obj);
+            RequestStatus::Ok
         } else {
-            self.deferred_after_login.push(obj.to_json())
+            self.deferred_after_login.push(obj.to_json());
+            RequestStatus::Deferred
         }
     }
 
@@ -368,11 +375,11 @@ impl Client {
         }
     }
 
-    pub fn do_request(&mut self, media: &Media) {
+    pub fn do_request(&mut self, media: &Media) -> RequestStatus {
         self.do_request_from_key(&media.key)
     }
 
-    pub fn do_request_from_key(&mut self, key: &str) {
+    pub fn do_request_from_key(&mut self, key: &str) -> RequestStatus {
         let b = make_json_hashmap!("type" => "request", "mediaKey" => key);
         self.send_message_after_login(&b)
     }
