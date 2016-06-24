@@ -1,6 +1,5 @@
 #[macro_use] extern crate chan;
 extern crate env_logger;
-#[macro_use] extern crate lazy_static;
 extern crate libclient;
 #[macro_use] extern crate log;
 extern crate regex;
@@ -15,6 +14,7 @@ mod tui;
 use tui::{TUI, Error as TUIError};
 
 const URL: &'static str = "http://10.1.2.3/api";
+// const URL: &'static str = "http://noordslet.science.ru.nl/api";
 
 fn main() {
     // initialize logger
