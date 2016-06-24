@@ -2,6 +2,7 @@
 extern crate env_logger;
 extern crate libclient;
 #[macro_use] extern crate log;
+extern crate lru_time_cache;
 extern crate regex;
 extern crate rustc_serialize;
 extern crate termbox_sys as termbox;

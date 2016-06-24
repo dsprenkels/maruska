@@ -31,18 +31,19 @@ macro_rules! make_json_hashmap {
 }
 
 #[derive(Debug)]
-pub enum MessageType {
+pub enum Message {
     Welcome,
     Playing,
     Requests,
     LoginToken,
     Login,
+    LoginError(String),
     QueryMediaResults,
 }
 
 #[derive(Debug)]
 pub enum ClientError {
-    Comet(CometError)
+    Comet(CometError),
 }
 
 #[derive(Debug)]
@@ -175,40 +176,47 @@ impl Client {
         }
     }
 
-    pub fn handle_message(&mut self, msg: &Json) -> Result<MessageType, ClientError> {
+    pub fn handle_message(&mut self, msg: &Json) -> Result<Message, ClientError> {
+        let fail = || CometError::MalformedResponse(("found no msg type", msg.clone()));
         let msg_type = try!(Some(msg)
             .and_then(|x| x.as_object())
             .and_then(|x| x.get("type"))
             .and_then(|x| x.as_string())
-            .ok_or_else(|| CometError::MalformedResponse(("found no msg type", msg.clone())))
+            .ok_or_else(&fail)
         );
-        match &msg_type {
-            &"welcome" => Ok(MessageType::Welcome),
-            &"playing" => self.handle_playing(msg),
-            &"requests" => self.handle_requests(msg),
-            &"login_token" => self.handle_login_token(msg),
-            &"logged_in" => self.handle_logged_in(msg),
-            &"query_media_results" => self.handle_query_media_results(msg),
-            &_ => panic!("unhandled message type {}", msg_type)
+        match msg_type {
+            "welcome" => Ok(Message::Welcome),
+            "playing" => self.handle_playing(msg),
+            "requests" => self.handle_requests(msg),
+            "login_token" => self.handle_login_token(msg),
+            "logged_in" => self.handle_logged_in(msg),
+            "error_login" => self.handle_login_error(msg),
+            "query_media_results" => self.handle_query_media_results(msg),
+            _ => {
+                debug!("unhandled message type in message: {}", msg);
+                panic!("unhandled message type {}", msg_type);
+            },
         }
     }
 
-    fn handle_playing(&mut self, msg: &Json) -> Result<MessageType, ClientError> {
+    fn handle_playing(&mut self, msg: &Json) -> Result<Message, ClientError> {
+        let fail = || CometError::MalformedResponse(("found no playing object", msg.clone()));
         let playing = try!(msg.as_object()
             .and_then(|x| x.get("playing"))
-            .ok_or_else(|| CometError::MalformedResponse(("found no playing object", msg.clone())))
+            .ok_or_else(&fail)
             .map(|x| decode(&format!("{}", x)))
         );
         self.playing = Some(playing.unwrap());
         debug!("currently playing: {:?}", self.playing);
-        Ok(MessageType::Playing)
+        Ok(Message::Playing)
     }
 
-    fn handle_requests(&mut self, msg: &Json) -> Result<MessageType, ClientError> {
+    fn handle_requests(&mut self, msg: &Json) -> Result<Message, ClientError> {
+        let fail = || CometError::MalformedResponse(("found no requests array", msg.clone()));
         let requests_array = try!(msg.as_object()
             .and_then(|x| x.get("requests"))
             .and_then(|x| x.as_array())
-            .ok_or_else(|| CometError::MalformedResponse(("found no requests array", msg.clone())))
+            .ok_or_else(&fail)
         );
         let mut requests = Vec::with_capacity(requests_array.len());
         for x in requests_array.iter() {
@@ -216,14 +224,15 @@ impl Client {
         }
         self.requests = Some(requests);
         debug!("current requests: {:?}", self.requests);
-        Ok(MessageType::Requests)
+        Ok(Message::Requests)
     }
 
-    fn handle_login_token(&mut self, msg: &Json) -> Result<MessageType, ClientError> {
+    fn handle_login_token(&mut self, msg: &Json) -> Result<Message, ClientError> {
+        let fail = || CometError::MalformedResponse(("found no login_token string", msg.clone()));
         let login_token = try!(msg.as_object()
             .and_then(|x| x.get("login_token"))
             .and_then(|x| x.as_string())
-            .ok_or_else(|| CometError::MalformedResponse(("found no login_token string", msg.clone())))
+            .ok_or_else(&fail)
         );
         self.login_token = Some(String::from(login_token));
         self.waiting_for_login_token = false;
@@ -231,17 +240,20 @@ impl Client {
         if let Some((ref username, ref secret, using_access_key)) = self.deferred_login.clone() {
             self.do_login_inner(username, secret, using_access_key);
         }
-        Ok(MessageType::LoginToken)
+        Ok(Message::LoginToken)
     }
 
-    fn handle_logged_in(&mut self, msg: &Json) -> Result<MessageType, ClientError> {
+    fn handle_logged_in(&mut self, msg: &Json) -> Result<Message, ClientError> {
         self.waiting_for_login = false;
         self.logged_in = true;
+
+        let fail = || CometError::MalformedResponse(("found no accessKey string", msg.clone()));
         self.access_key = Some(try!(msg.as_object()
             .and_then(|x| x.get("accessKey"))
             .and_then(|x| x.as_string())
-            .ok_or_else(|| CometError::MalformedResponse(("found no accessKey string", msg.clone())))
-        ).to_owned());
+            .ok_or_else(&fail))
+            .to_owned()
+        );
 
         let mut messages = Vec::with_capacity(self.deferred_after_login.len());
         messages.append(&mut self.deferred_after_login);
@@ -249,24 +261,36 @@ impl Client {
             self.send_message(&message);
         }
         self.deferred_after_login.clear();
-        Ok(MessageType::Login)
+        Ok(Message::Login)
     }
 
-    fn handle_query_media_results(&mut self, msg: &Json) -> Result<MessageType, ClientError> {
+    fn handle_login_error(&mut self, msg: &Json) -> Result<Message, ClientError> {
+        let fail = || CometError::MalformedResponse(("found no message string", msg.clone()));
+        let error_msg = try!(msg.as_object()
+                                .and_then(|x| x.get("message"))
+                                .and_then(|x| x.as_string())
+                                .ok_or_else(&fail));
+
+        debug!("login error: {}", error_msg);
+        Ok(Message::LoginError(error_msg.to_owned()))
+    }
+
+    fn handle_query_media_results(&mut self, msg: &Json) -> Result<Message, ClientError> {
+        let fail = || CometError::MalformedResponse(("found no token string", msg.clone()));
         let token = try!(msg.as_object()
             .and_then(|x| x.get("token"))
             .and_then(|x| x.as_u64())
-            .ok_or_else(|| CometError::MalformedResponse(("found no token string", msg.clone())))
+            .ok_or_else(&fail)
         );
         if token != self.qm_token_and_count.0 {
-            return Ok(MessageType::QueryMediaResults);
+            return Ok(Message::QueryMediaResults);
         }
         self.waiting_for_qm_results = false;
 
         let results_array = try!(msg.as_object()
             .and_then(|x| x.get("results"))
             .and_then(|x| x.as_array())
-            .ok_or_else(|| CometError::MalformedResponse(("found no token string", msg.clone())))
+            .ok_or_else(&fail)
         );
 
         for x in results_array {
@@ -280,7 +304,7 @@ impl Client {
         } else {
             self.qm_done = true;
         }
-        Ok(MessageType::QueryMediaResults)
+        Ok(Message::QueryMediaResults)
     }
 
     pub fn follow_all(&mut self) {
