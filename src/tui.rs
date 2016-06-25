@@ -1,9 +1,7 @@
 use std::borrow::Cow;
 use std::char;
 use std::cmp::{max, min};
-use std::collections::hash_set::HashSet;
-use std::iter::{once, repeat};
-use std::iter::FromIterator;
+use std::iter::repeat;
 use std::thread;
 
 use chan;
@@ -278,7 +276,10 @@ impl TUI {
                     self.handle_input_ch(event.ch)
                 }
             },
-            TB_EVENT_RESIZE => unimplemented!(),
+            TB_EVENT_RESIZE => {
+                trace!("ignoring resize event");
+                Ok(())
+            },
             TB_EVENT_MOUSE => {
                 warn!("ignoring mouse event");
                 Ok(())
@@ -457,7 +458,7 @@ impl TUI {
         let col_widths = fit_columns(&str_table, &[1f32, 4f32, 4f32, 1f32], w as usize);
 
         // do the actual drawing
-        self.draw_table(&str_table, &col_widths, once(0));
+        self.draw_table(&str_table, &col_widths, 0);
     }
 
     fn draw_search_results(&mut self) {
@@ -475,15 +476,13 @@ impl TUI {
         }
 
         let col_widths = fit_columns(&str_table, &[1f32, 1f32], w as usize);
-        self.draw_table(&str_table, &col_widths, once(self.results_focus - self.results_offset));
+        self.draw_table(&str_table, &col_widths, self.results_focus - self.results_offset);
     }
 
-    fn draw_table<T>(&self, str_table: &Vec<Vec<String>>, col_widths: &Vec<usize>,
-                  selected: T)
-        where T : IntoIterator<Item=usize> {
-        let selected: HashSet<usize> = HashSet::from_iter(selected.into_iter());
+    fn draw_table(&self, str_table: &Vec<Vec<String>>, col_widths: &Vec<usize>,
+                  selected: usize) {
         for (y, row) in str_table.iter().enumerate() {
-            let (fg, fg2, bg) = if selected.contains(&y) {
+            let (fg, fg2, bg) = if y == selected {
                 (TB_BLACK, TB_BLUE, TB_WHITE)
             } else {
                 (TB_DEFAULT, TB_BLUE, TB_DEFAULT)
