@@ -111,7 +111,7 @@ impl TUI {
     }
 
     pub fn serve_events() -> chan::Receiver<RawEvent> {
-        let (s, r) = chan::async();
+        let (s, r) = chan::sync(1);
         thread::spawn(move || TUI::mainloop(s));
         r
     }
