@@ -1,5 +1,6 @@
 #[macro_use] extern crate chan;
 extern crate env_logger;
+#[macro_use] extern crate lazy_static;
 extern crate libclient;
 #[macro_use] extern crate log;
 extern crate lru_time_cache;

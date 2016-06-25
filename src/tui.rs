@@ -8,6 +8,7 @@ use std::thread;
 
 use chan;
 use lru_time_cache::LruCache;
+use regex::Regex;
 use rustc_serialize::json::Json;
 use termbox::*;
 use time::{Duration, get_time};
@@ -52,7 +53,7 @@ const COMMANDS: [&'static str; 2] = [
     CMD_USERNAME, CMD_PASSWORD,
 ];
 
-const STATUS_TIMEOUT_MILLIS: u64 = 4000;
+const STATUS_TIMEOUT_MILLIS: u64 = 5000;
 
 pub enum Error {
     Quit,
@@ -167,7 +168,11 @@ impl TUI {
         self.query.clear();
         match self.client.do_request_from_key(&media_key) {
             RequestStatus::Ok => {},
-            RequestStatus::Deferred => self.query.push_str(":username "),
+            RequestStatus::Deferred => {
+                // Tell the user that logging in is needed
+                self.status.insert((), (Cow::from("Not logged in"), StatusType::Warning));
+                self.query.push_str(":username ");
+            },
         }
     }
 
@@ -239,8 +244,24 @@ impl TUI {
             Message::Login => {
                 self.status.insert((), (Cow::from("Succesfully logged in"), StatusType::Success));
             },
-            Message::LoginError(msg) => {
+            Message::LoginError(ref msg) if msg == "User does not exist" => {
+                let msg = format!("Login failed: user \"{}\" does not exist",
+                                  self.username.as_ref().unwrap());
                 self.status.insert((), (Cow::from(msg), StatusType::Error));
+
+                // If the user has not given any input yet, reinsert ":username " into self.query
+                if self.query.is_empty() {
+                    self.query.push_str(":username ");
+                }
+            },
+            Message::LoginError(ref msg) if msg == "Wrong password" => {
+                let msg = "Login failed: wrong password";
+                self.status.insert((), (Cow::from(msg), StatusType::Error));
+
+                // Same as above, but with ":password "
+                if self.query.is_empty() {
+                    self.query.push_str(":password ");
+                }
             },
             msg => {
                 debug!("unhandled message from client: {:?}", msg);
@@ -258,9 +279,12 @@ impl TUI {
                 }
             },
             TB_EVENT_RESIZE => unimplemented!(),
-            TB_EVENT_MOUSE => unimplemented!(),
+            TB_EVENT_MOUSE => {
+                warn!("ignoring mouse event");
+                Ok(())
+            },
             _ => {
-                error!("unknown event type {}", event.etype);
+                error!("ingoring unknown event type {}", event.etype);
                 Ok(())
             },
         }
@@ -271,7 +295,7 @@ impl TUI {
             47 | 58 => self.handle_input_cmdtypechar(ch),
             33 ... 126 => self.handle_input_alphanum(ch),
             ch => {
-                debug!("unimplemented keycode {}", ch);
+                error!("unimplemented keycode {}", ch);
                 unimplemented!();
             },
         };
@@ -289,8 +313,12 @@ impl TUI {
             TB_KEY_SPACE => self.handle_input_alphanum(' ' as u32),
             TB_KEY_BACKSPACE | TB_KEY_BACKSPACE2 => self.handle_input_backspace(key),
             TB_KEY_CTRL_C => Err(Error::Quit),
+            TB_KEY_CTRL_W => self.handle_input_delword(key),
             TB_KEY_CTRL_U => self.handle_input_nak(key),
-            key => unimplemented!(),
+            key => {
+                warn!("ignoring unhandled keycode {}", key);
+                Ok(())
+            },
         }
     }
 
@@ -314,9 +342,21 @@ impl TUI {
         match &self.query.chars().nth(0) {
             &Some('/') => self.do_request(),
             &Some(':') => self.do_command(),
-            &Some(_) => cleanup!(unimplemented!()),
+            &Some(_) => cleanup!(unreachable!()),
             &None => {}, // do nothing
         }
+        Ok(())
+    }
+
+    fn handle_input_delword(&mut self, _: u16) -> Result<(), Error> {
+        lazy_static! {
+            static ref WORD: Regex = Regex::new(r#"\S+"#).unwrap();
+        }
+        match WORD.find_iter(&self.query).last() {
+            _ if self.query.len() == 1 => self.query.clear(),
+            Some((start, _)) => self.query.truncate(max(start, 1)),
+            None => {},
+        };
         Ok(())
     }
 
@@ -339,7 +379,7 @@ impl TUI {
                     self.do_query();
                 },
                 58 => self.query.push(':'),
-                _ => error!("unreachable"),
+                _ => cleanup!(unreachable!()),
             }
         }
         Ok(())
@@ -352,7 +392,7 @@ impl TUI {
                 if self.query.is_empty() { self.query.push('/') };
                 self.query.push(ch);
             },
-            None => error!("unreachable")
+            None => cleanup!(unreachable!()),
         }
         self.do_query();
         Ok(())
@@ -446,7 +486,7 @@ impl TUI {
             let (fg, fg2, bg) = if selected.contains(&y) {
                 (TB_BLACK, TB_BLUE, TB_WHITE)
             } else {
-                (TB_DEFAULT, TB_BLUE, TB_BLACK)
+                (TB_DEFAULT, TB_BLUE, TB_DEFAULT)
             };
             unsafe {
                 for (j, cell) in row.iter().enumerate() {
@@ -486,12 +526,12 @@ impl TUI {
             let cmdlen = cmd.len();
             unsafe {
                 self.print(0, (h-1) as i32, TB_DEFAULT, TB_DEFAULT, &query[0..1],
-                           maxwidth as usize, TB_DEFAULT, TB_DEFAULT, "...");
+                           maxwidth as usize, TB_DEFAULT, TB_BLUE, "$");
                 self.print(1, (h-1) as i32, TB_BOLD, TB_DEFAULT, &query[1..1+cmdlen],
-                           maxwidth as usize - 1, TB_DEFAULT, TB_DEFAULT, "...");
+                           maxwidth as usize - 1, TB_DEFAULT, TB_BLUE, "$");
                 self.print(cmdlen as i32 + 1, (h-1) as i32, TB_DEFAULT, TB_DEFAULT,
                            &query[1+cmdlen..], maxwidth as usize - 1 - cmdlen, TB_DEFAULT,
-                           TB_DEFAULT, "...");
+                           TB_BLUE, "$");
             }
         } else {
             unsafe {
@@ -499,12 +539,17 @@ impl TUI {
                            maxwidth as usize, TB_DEFAULT, TB_DEFAULT, "...");
             }
         }
+
+        // update cursor
+        unsafe {
+            tb_set_cursor(self.query.len() as i32, (h-1) as i32);
+        }
     }
 
     fn draw_status(&self) {
         if let Some(&(ref status, ref ty)) = self.status.peek(&()) {
             let (w, h) = self.get_size();
-            let offset = (2 * w) / 3;
+            let offset = w / 2;
             let maxwidth = w - offset;
             let fg = match *ty {
                 StatusType::Info => TB_BLUE,
