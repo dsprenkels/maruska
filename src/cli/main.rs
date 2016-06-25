@@ -15,17 +15,17 @@ use utils::show_version_and_exit;
 
 const USAGE: &'static str = "
 Usage:
-  maruska --host=HOST <command> [<args>...]
-  maruska [options]
+  maruska-cli --host=HOST <command> [<args>...]
+  maruska-cli [options]
 
 Options:
-  -h --help             Display this message
-  --version             Print version info and exit
   -v --verbose          Use verbose output
   -H --host HOST        Hostname of marietje server
   -u --username USER    Use a different username (than `whoami`)
   -p --password PASSWD  Provide a password on the command line
   -y --yes              Run non-interactively (assume yes)
+  -h --help             Display this message
+  --version             Print version info and exit
 
 Commands:
   playing      Get the currently playing song

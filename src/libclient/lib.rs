@@ -9,6 +9,7 @@ mod comet;
 pub mod media;
 
 use std::collections::HashMap;
+use std::error::Error;
 use std::fmt;
 use std::thread;
 
@@ -58,11 +59,17 @@ impl fmt::Display for ClientError {
 }
 
 impl From<CometError> for ClientError {
-    fn from(err: CometError) -> ClientError {
+    fn from(err: CometError) -> Self {
         ClientError::Comet(err)
     }
 }
 
+impl Error for ClientError {
+    fn description(&self) -> &str {
+        let ClientError::Comet(ref err) = *self;
+        err.description()
+    }
+}
 
 pub struct Client {
     // The wrapped comet channel
@@ -122,11 +129,15 @@ pub struct Client {
 }
 
 impl Client {
-    pub fn new(url: &str) -> (Client, chan::Receiver<Json>) {
+    pub fn new(url: &str) -> Result<(Client, chan::Receiver<Json>), ClientError> {
         let (send_message_s, send_message_r) = chan::async();
         let (recv_message_s, recv_message_r) = chan::async();
-        (Client {
-            channel: CometChannel::new(&url, send_message_r, recv_message_s).unwrap(),
+        let comet_channel = match CometChannel::new(&url, send_message_r, recv_message_s) {
+            Ok(comet_channel) => comet_channel,
+            Err(err) => return Err(ClientError::from(err)),
+        };
+        Ok((Client {
+            channel: comet_channel,
             send_message_s: send_message_s,
             playing: None,
             requests: None,
@@ -143,7 +154,7 @@ impl Client {
             qm_done: true,
             waiting_for_qm_results: false,
             deferred_after_login: Vec::new()
-        }, recv_message_r)
+        }, recv_message_r))
     }
 
     pub fn get_playing(&self) -> &Option<Playing> {
@@ -285,6 +296,9 @@ impl Client {
         if token != self.qm_token_and_count.0 {
             return Ok(Message::QueryMediaResults);
         }
+        // FIXME Currently, there is no check whether there is already a new query
+        //       from the user (UI). The communication model might need some reviewing
+        //       before this can be fixed correctly.
         self.waiting_for_qm_results = false;
 
         let results_array = try!(msg.as_object()
@@ -293,6 +307,7 @@ impl Client {
             .ok_or_else(&fail)
         );
 
+        self.qm_results.reserve(results_array.len());
         for x in results_array {
             self.qm_results.push(decode::<Media>(&format!("{}", x)).unwrap());
         }
@@ -321,7 +336,6 @@ impl Client {
         );
         self.send_message_s.send(b.to_json())
     }
-
 
     pub fn request_login_token(&mut self) {
         let b = make_json_hashmap!("type" => "request_login_token");
@@ -356,24 +370,30 @@ impl Client {
     }
 
     pub fn query_media(&mut self, query: &str, count: usize) {
-        match self.qm_query {
-            Some(ref x) if query != x => self.qm_results.clear(),
-            _ => {}
+        if self.qm_query.as_ref().map_or(true, |x| x != query) {
+            self.qm_results.clear();
+            self.qm_done = false;
+            self.qm_query = Some(String::from(query));
         }
-
-        self.qm_query = Some(String::from(query));
         self.qm_results_count = count;
-        self.qm_done = false;
-        self.query_media_inner()
+
+        // Don't request eagerly
+        if self.qm_results.len() < count && !self.qm_done {
+            self.query_media_inner();
+        }
     }
 
     fn query_media_inner(&mut self) {
         use std::cmp::min;
 
+        if self.waiting_for_qm_results {
+            return;
+        }
+
         let skip = self.qm_results.len();
         self.qm_token_and_count.0 += 1;
 
-        // We don't want to make requests with more than `QUERY_CHUNK_SIZE` results,
+        // We don't want to make requests with more than `qm_chunk_size()` results,
         // because it would introduce too much lag. So if the user (interface)
         // requests more than `count` results, we do them in subsequent requests.
         self.qm_token_and_count.1 = min(self.qm_results_count - skip, self.qm_chunk_size());

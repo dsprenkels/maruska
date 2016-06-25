@@ -25,7 +25,7 @@ pub fn main(argv: Vec<String>, global_args: super::Args) {
 }
 
 pub fn execute(_: Args, global_args: super::Args) {
-    let (mut client, client_r) = Client::new(&global_args.flag_host);
+    let (mut client, client_r) = Client::new(&global_args.flag_host).unwrap();
     client.follow(vec!(String::from("playing")));
     client.serve();
 

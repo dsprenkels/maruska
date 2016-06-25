@@ -1,6 +1,8 @@
 use std::borrow::Cow;
 use std::char;
 use std::cmp::{max, min};
+use std::error::Error;
+use std::fmt;
 use std::iter::repeat;
 use std::thread;
 
@@ -46,14 +48,15 @@ macro_rules! clean_assert {
 
 const CMD_USERNAME: &'static str = "username";
 const CMD_PASSWORD: &'static str = "password";
-
 const COMMANDS: [&'static str; 2] = [
     CMD_USERNAME, CMD_PASSWORD,
 ];
-
 const STATUS_TIMEOUT_MILLIS: u64 = 5000;
+const QM_BUFFER_SIZE: usize = 5000;
 
-pub enum Error {
+#[derive(Debug)]
+pub enum TUIError {
+    Client(ClientError),
     Quit,
 }
 
@@ -79,17 +82,42 @@ pub struct TUI {
     status: LruCache<(), (Cow<'static, str>, StatusType)>,
 }
 
+impl fmt::Display for TUIError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}", self.description())
+    }
+}
+
+impl From<ClientError> for TUIError {
+    fn from(err: ClientError) -> Self {
+        TUIError::Client(err)
+    }
+}
+
+impl Error for TUIError {
+    fn description(&self) -> &str {
+        match *self {
+            TUIError::Client(ref err) => err.description(),
+            TUIError::Quit => "quit",
+        }
+    }
+}
+
 impl TUI {
-    pub fn new(url: &str) -> (TUI, (chan::Receiver<Json>,
+    pub fn new(url: &str) -> Result<(TUI, (chan::Receiver<Json>,
                                     chan::Receiver<RawEvent>,
-                                    chan::Receiver<chan::Sender<()>>)) {
+                                    chan::Receiver<chan::Sender<()>>)), TUIError> {
         // shadow the `Duration` from the one of the `time` crate
         use std::time::Duration;
 
         // initialize client
-        let (mut client, client_r) = Client::new(url);
+        let (mut client, client_r) = match Client::new(url) {
+            Ok((client, client_r)) => (client, client_r),
+            Err(err) => return Err(TUIError::from(err)),
+        };
         client.follow_all();
         client.serve();
+
 
         // initialize user interface
         unsafe { tb_init(); }
@@ -107,11 +135,11 @@ impl TUI {
         let tui_r = TUI::serve_events();
 
         let tick_r = chan::tick(Duration::from_secs(1));
-        (tui, (client_r, tui_r, tick_r))
+        Ok((tui, (client_r, tui_r, tick_r)))
     }
 
     pub fn serve_events() -> chan::Receiver<RawEvent> {
-        let (s, r) = chan::sync(1);
+        let (s, r) = chan::sync(0);
         thread::spawn(move || TUI::mainloop(s));
         r
     }
@@ -148,11 +176,10 @@ impl TUI {
     }
 
     fn do_query(&mut self) {
-        let height = unsafe { tb_height() as usize };
         if !self.query.starts_with('/') {
             return;
         }
-        self.client.query_media(&self.query[1..], height * 10);
+        self.client.query_media(&self.query[1..], self.results_offset + QM_BUFFER_SIZE);
     }
 
     fn do_request(&mut self) {
@@ -208,36 +235,46 @@ impl TUI {
         self.query.clear();
     }
 
-    fn move_focus(&mut self, x: isize) {
+    fn move_focus(&mut self, x: isize, fix_offset: bool) {
         if self.query.starts_with('/') {
-            self.move_results_focus(x)
+            self.move_results_focus(x, fix_offset)
         }
     }
 
-    fn move_results_focus(&mut self, x: isize) {
+    fn move_results_focus(&mut self, x: isize, fix_offset: bool) {
         fn bounded<T: Ord>(v1: T, v2: T, v3: T) -> T {
             max(v1, min(v2, v3))
         }
         let max_index = self.client.get_qm_results().0.len().saturating_sub(1);
-        let h = if let Some(h) = self.get_height().checked_sub(1) {
-            h // height of the results window
-        } else {
-            cleanup!(panic!("viewport height is too small"));
-        };
+        let h = self.get_viewport_height();
+
         let new_results_focus = if x >= 0 {
             (self.results_focus).saturating_add(x as usize)
         } else {
             (self.results_focus).saturating_sub(-x as usize)
         };
         self.results_focus = bounded(0, new_results_focus, max_index);
-        self.results_offset = bounded(self.results_focus.saturating_sub(h-1),
-                                      self.results_offset, self.results_focus);
+
+        let new_results_offset = if fix_offset {
+            if x >= 0 {
+                (self.results_offset).saturating_add(x as usize)
+            } else {
+                (self.results_offset).saturating_sub(-x as usize)
+            }
+        } else {
+            self.results_offset
+        };
+        self.results_offset = bounded(self.results_focus.saturating_sub(h as usize - 1),
+                                      new_results_offset, self.results_focus);
+
+        // requery the client
+        self.do_query();
     }
 
     pub fn handle_message_from_client(&mut self, message: &Json) -> Result<(), ClientError> {
         self.client.handle_message(message).map(|x| match x {
             Message::QueryMediaResults => {
-                self.move_results_focus(0); // reinit focus inside the new bounds
+                self.move_results_focus(0, false); // reinit focus inside the new bounds
             },
             Message::Login => {
                 self.status.insert((), (Cow::from("Succesfully logged in"), StatusType::Success));
@@ -267,7 +304,7 @@ impl TUI {
         })
     }
 
-    pub fn handle_event(&mut self, event: RawEvent) -> Result<(), Error> {
+    pub fn handle_event(&mut self, event: RawEvent) -> Result<(), TUIError> {
         match event.etype {
             TB_EVENT_KEY => {
                 if event.ch == 0 {
@@ -291,7 +328,7 @@ impl TUI {
         }
     }
 
-    fn handle_input_ch(&mut self, ch: u32) -> Result<(), Error> {
+    fn handle_input_ch(&mut self, ch: u32) -> Result<(), TUIError> {
         let ret = match ch {
             47 | 58 => self.handle_input_cmdtypechar(ch),
             33 ... 126 => self.handle_input_alphanum(ch),
@@ -304,16 +341,18 @@ impl TUI {
         ret
     }
 
-    fn handle_input_key(&mut self, key: u16) -> Result<(), Error> {
+    fn handle_input_key(&mut self, key: u16) -> Result<(), TUIError> {
         // TODO Page {up, down} should self.results_offset -= (-)self.height()
         //      and put the current focus at the entry closes to the new bounds
         match key {
             TB_KEY_ARROW_UP => self.handle_arrow_up(),
             TB_KEY_ARROW_DOWN => self.handle_arrow_down(),
+            TB_KEY_PGUP => self.handle_page_up(),
+            TB_KEY_PGDN => self.handle_page_down(),
             TB_KEY_ENTER => self.handle_input_submit(key),
             TB_KEY_SPACE => self.handle_input_alphanum(' ' as u32),
             TB_KEY_BACKSPACE | TB_KEY_BACKSPACE2 => self.handle_input_backspace(key),
-            TB_KEY_CTRL_C => Err(Error::Quit),
+            TB_KEY_CTRL_C => Err(TUIError::Quit),
             TB_KEY_CTRL_W => self.handle_input_delword(key),
             TB_KEY_CTRL_U => self.handle_input_nak(key),
             key => {
@@ -323,23 +362,35 @@ impl TUI {
         }
     }
 
-    fn handle_arrow_up(&mut self) -> Result<(), Error> {
-        self.move_focus(-1);
+    fn handle_arrow_up(&mut self) -> Result<(), TUIError> {
+        self.move_focus(-1, false);
         Ok(())
     }
 
-    fn handle_arrow_down(&mut self) -> Result<(), Error> {
-        self.move_focus(1);
+    fn handle_arrow_down(&mut self) -> Result<(), TUIError> {
+        self.move_focus(1, false);
         Ok(())
     }
 
-    fn handle_input_backspace(&mut self, _: u16) -> Result<(), Error> {
+    fn handle_page_up(&mut self) -> Result<(), TUIError> {
+        let h = self.get_viewport_height() as isize;
+        self.move_focus(-h, true);
+        Ok(())
+    }
+
+    fn handle_page_down(&mut self) -> Result<(), TUIError> {
+        let h = self.get_viewport_height() as isize;
+        self.move_focus(h, true);
+        Ok(())
+    }
+
+    fn handle_input_backspace(&mut self, _: u16) -> Result<(), TUIError> {
         self.query.pop();
         self.do_query();
         Ok(())
     }
 
-    fn handle_input_submit(&mut self, _: u16) -> Result<(), Error> {
+    fn handle_input_submit(&mut self, _: u16) -> Result<(), TUIError> {
         match &self.query.chars().nth(0) {
             &Some('/') => self.do_request(),
             &Some(':') => self.do_command(),
@@ -349,7 +400,7 @@ impl TUI {
         Ok(())
     }
 
-    fn handle_input_delword(&mut self, _: u16) -> Result<(), Error> {
+    fn handle_input_delword(&mut self, _: u16) -> Result<(), TUIError> {
         lazy_static! {
             static ref WORD: Regex = Regex::new(r#"\S+"#).unwrap();
         }
@@ -361,7 +412,7 @@ impl TUI {
         Ok(())
     }
 
-    fn handle_input_nak(&mut self, _: u16) -> Result<(), Error> {
+    fn handle_input_nak(&mut self, _: u16) -> Result<(), TUIError> {
         if self.query.len() > 1 {
             self.query.truncate(1);
         } else {
@@ -370,7 +421,7 @@ impl TUI {
         Ok(())
     }
 
-    fn handle_input_cmdtypechar(&mut self, ch: u32) -> Result<(), Error> {
+    fn handle_input_cmdtypechar(&mut self, ch: u32) -> Result<(), TUIError> {
         if !self.query.is_empty() { return Ok(()); }
 
         if self.query.len() == 0 {
@@ -386,7 +437,7 @@ impl TUI {
         Ok(())
     }
 
-    fn handle_input_alphanum(&mut self, input_ch: u32) -> Result<(), Error> {
+    fn handle_input_alphanum(&mut self, input_ch: u32) -> Result<(), TUIError> {
         let ch_option = char::from_u32(input_ch as u32);
         match ch_option {
             Some(ch) => {
@@ -421,15 +472,15 @@ impl TUI {
         if self.query.starts_with('/') {
             self.draw_search_results();
         } else {
-            self.draw_current_requests_results();
+            self.draw_current_requests();
         }
         self.draw_query();
         self.draw_status();
         unsafe { tb_present(); }
     }
 
-    fn draw_current_requests_results(&mut self) {
-        let (w, h) = self.get_size();
+    fn draw_current_requests(&mut self) {
+        let (w, h) = self.get_viewport_size();
         let mut str_table: Vec<Vec<String>> = Vec::new();
 
         // first line shows currently playing song
@@ -443,9 +494,9 @@ impl TUI {
             vec!(String::new(), String::new(), String::new(), String::new())
         });
 
-        // rest shows the current request queue
-        if let &Some(ref requests) = self.client.get_requests() {
-            for request in requests.iter().skip(self.results_offset).take(h - 2) {
+        // rest shows the current request queue, offset is ignored (-> 0)
+        if let Some(ref requests) = *self.client.get_requests() {
+            for request in requests.iter().take(h as usize - 1) {
                 let requested_by = String::from(unwrap_requested_by(&request.by));
                 let media = &request.media;
                 queue_length = queue_length + media.length;;
@@ -458,7 +509,7 @@ impl TUI {
         let col_widths = fit_columns(&str_table, &[1f32, 4f32, 4f32, 1f32], w as usize);
 
         // do the actual drawing
-        self.draw_table(&str_table, &col_widths, 0);
+        self.draw_table(&str_table, &col_widths, None);
     }
 
     fn draw_search_results(&mut self) {
@@ -467,22 +518,22 @@ impl TUI {
         //      and maybe update self.results_offset accordingly
         // TODO Show blue tildes '~' (as in vim) at the end of the range.
         //      Futhermore, allow scrolling past the EOF
-        let (w, h) = self.get_size();
+        let (w, h) = self.get_viewport_size();
         let mut str_table: Vec<Vec<String>> = Vec::new();
 
         let (results, qm_done) = self.client.get_qm_results();
-        for media in results.iter().skip(self.results_offset).take(h - 1) {
+        for media in results.iter().skip(self.results_offset).take(h as usize) {
             str_table.push(vec!(media.artist.clone(), media.title.clone()));
         }
 
         let col_widths = fit_columns(&str_table, &[1f32, 1f32], w as usize);
-        self.draw_table(&str_table, &col_widths, self.results_focus - self.results_offset);
+        self.draw_table(&str_table, &col_widths, Some(self.results_focus - self.results_offset));
     }
 
     fn draw_table(&self, str_table: &Vec<Vec<String>>, col_widths: &Vec<usize>,
-                  selected: usize) {
+                  selected: Option<usize>) {
         for (y, row) in str_table.iter().enumerate() {
-            let (fg, fg2, bg) = if y == selected {
+            let (fg, fg2, bg) = if selected.map_or(false, |s| s == y) {
                 (TB_BLACK, TB_BLUE, TB_WHITE)
             } else {
                 (TB_DEFAULT, TB_BLUE, TB_DEFAULT)
@@ -499,11 +550,11 @@ impl TUI {
 
     fn draw_query(&mut self) {
         // draw query field
-        let (w, h) = self.get_size();
-        let maxwidth = if self.status.peek(&()).is_some() {
-            w / 2
+        let (w, h) = self.get_viewport_size();
+        let maxwidth: usize = if self.status.peek(&()).is_some() {
+            w as usize / 2
         } else {
-            w
+            w as usize
         };
         let ref substr = format!(":{} ", CMD_PASSWORD);
         let query = if self.query.starts_with(substr) {
@@ -524,30 +575,29 @@ impl TUI {
             // print command bold
             let cmdlen = cmd.len();
             unsafe {
-                self.print(0, (h-1) as i32, TB_DEFAULT, TB_DEFAULT, &query[0..1],
-                           maxwidth as usize, TB_DEFAULT, TB_BLUE, "$");
-                self.print(1, (h-1) as i32, TB_BOLD, TB_DEFAULT, &query[1..1+cmdlen],
-                           maxwidth as usize - 1, TB_DEFAULT, TB_BLUE, "$");
-                self.print(cmdlen as i32 + 1, (h-1) as i32, TB_DEFAULT, TB_DEFAULT,
-                           &query[1+cmdlen..], maxwidth as usize - 1 - cmdlen, TB_DEFAULT,
-                           TB_BLUE, "$");
+                self.print(0, h, TB_DEFAULT, TB_DEFAULT, &query[0..1], maxwidth,
+                           TB_DEFAULT, TB_BLUE, "$");
+                self.print(1, h, TB_BOLD, TB_DEFAULT, &query[1..1+cmdlen], maxwidth - 1,
+                           TB_DEFAULT, TB_BLUE, "$");
+                self.print(cmdlen as i32 + 1, h, TB_DEFAULT, TB_DEFAULT, &query[1+cmdlen..],
+                           maxwidth - 1 - cmdlen, TB_DEFAULT, TB_BLUE, "$");
             }
         } else {
             unsafe {
-                self.print(0, (h-1) as i32, TB_DEFAULT, TB_DEFAULT, &query,
+                self.print(0, h, TB_DEFAULT, TB_DEFAULT, &query,
                            maxwidth as usize, TB_DEFAULT, TB_DEFAULT, "...");
             }
         }
 
         // update cursor
         unsafe {
-            tb_set_cursor(self.query.len() as i32, (h-1) as i32);
+            tb_set_cursor(self.query.len() as i32, h);
         }
     }
 
     fn draw_status(&self) {
         if let Some(&(ref status, ref ty)) = self.status.peek(&()) {
-            let (w, h) = self.get_size();
+            let (w, h) = self.get_viewport_size();
             let offset = w / 2;
             let maxwidth = w - offset;
             let fg = match *ty {
@@ -558,23 +608,39 @@ impl TUI {
             } | TB_BOLD;
             let bg = TB_DEFAULT;
             unsafe {
-                self.print(offset as i32, (h-1) as i32, fg, bg, &status,
+                self.print(offset as i32, h, fg, bg, &status,
                            maxwidth as usize, TB_BLUE, bg, "$");
             }
         }
     }
 
-    fn get_width(&self) -> usize {
-        unsafe { tb_width() as usize }
+    fn get_width(&self) -> i32 {
+        unsafe { tb_width() as i32 }
     }
 
-    fn get_height(&self) -> usize {
-        unsafe { tb_height() as usize }
+    fn get_height(&self) -> i32 {
+        unsafe { tb_height() as i32 }
     }
 
-    fn get_size(&self) -> (usize, usize) {
+    fn get_size(&self) -> (i32, i32) {
         (self.get_width(), self.get_height())
     }
+
+    fn get_viewport_width(&self) -> i32 {
+        self.get_width()
+    }
+
+    fn get_viewport_height(&self) -> i32 {
+        match self.get_height().checked_sub(1) {
+            Some(h) => h,
+            None => cleanup!(panic!("viewport height is too small")),
+        }
+    }
+
+    fn get_viewport_size(&self) -> (i32, i32) {
+        (self.get_viewport_width(), self.get_viewport_height())
+    }
+
 }
 
 impl Drop for TUI {

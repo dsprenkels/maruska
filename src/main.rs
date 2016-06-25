@@ -1,4 +1,5 @@
 #[macro_use] extern crate chan;
+extern crate docopt;
 extern crate env_logger;
 #[macro_use] extern crate lazy_static;
 extern crate libclient;
@@ -12,11 +13,30 @@ extern crate toml;
 
 mod store;
 mod tui;
+mod utils;
 
-use tui::{TUI, Error as TUIError};
+use docopt::Docopt;
 
-const URL: &'static str = "http://10.1.2.3/api";
-// const URL: &'static str = "http://noordslet.science.ru.nl/api";
+use tui::{TUI, TUIError};
+use utils::show_version_and_exit;
+
+const USAGE: &'static str = "
+Usage:
+  maruska --host=HOST
+  maruska [options]
+
+Options:
+  -H --host HOST        Hostname of marietje server
+  -h --help             Display this message
+  --version             Print version info and exit
+";
+
+#[derive(Debug, RustcDecodable)]
+pub struct Args {
+    flag_host: String,
+    flag_help: bool,
+    flag_version: bool,
+}
 
 fn main() {
     // initialize logger
@@ -24,9 +44,22 @@ fn main() {
         panic!("Failed to initialize logger: {}", err);
     }
 
-    let (mut tui, event_receivers) = TUI::new(URL);
+    let args: Args = Docopt::new(USAGE)
+        .map(|d| d.help(true))
+        .and_then(|d| d.decode())
+        .unwrap_or_else(|e| e.exit());
+
+    if args.flag_version {
+        show_version_and_exit();
+    }
+
+    let (mut tui, event_receivers) = match TUI::new(&args.flag_host) {
+        Ok((tui, event_receivers)) => (tui, event_receivers),
+        Err(err) => panic!("initialization error: {}", err),
+    };
     let (client_r, tui_r, tick_r) = event_receivers;
 
+    let mut exit_err: Option<TUIError> = None;
     loop {
         chan_select! {
             client_r.recv() -> message => {
@@ -38,8 +71,16 @@ fn main() {
             tui_r.recv() -> event => match tui.handle_event(event.unwrap()) {
                 Ok(()) => {},
                 Err(TUIError::Quit) => break,
+                Err(err) => {
+                    exit_err = Some(err);
+                    break;
+                }
             },
             tick_r.recv() => {},
         }
         tui.draw();
-    }}
+    }
+    if let Some(err) = exit_err {
+        panic!("{}", err);
+    }
+}

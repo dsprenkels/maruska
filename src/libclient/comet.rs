@@ -26,31 +26,31 @@ impl fmt::Display for CometError {
 }
 
 impl From<HyperError> for CometError {
-    fn from(err: HyperError) -> CometError {
+    fn from(err: HyperError) -> Self {
         CometError::Hyper(err)
     }
 }
 
 impl From<IOError> for CometError {
-    fn from(err: IOError) -> CometError {
+    fn from(err: IOError) -> Self {
         CometError::IO(err)
     }
 }
 
 impl From<JsonError> for CometError {
-    fn from(err: JsonError) -> CometError {
+    fn from(err: JsonError) -> Self {
         CometError::Json(err)
     }
 }
 
 impl Error for CometError {
     fn description(&self) -> &str {
-        match self {
-            &CometError::Hyper(ref err) => err.description(),
-            &CometError::Recv => "cannot read on channel",
-            &CometError::IO(ref err) => err.description(),
-            &CometError::Json(ref err) => err.description(),
-            &CometError::MalformedResponse(_) => "malformed response",
+        match *self {
+            CometError::Hyper(ref err) => err.description(),
+            CometError::Recv => "cannot read on channel",
+            CometError::IO(ref err) => err.description(),
+            CometError::Json(ref err) => err.description(),
+            CometError::MalformedResponse(_) => "malformed response",
         }
     }
 }
