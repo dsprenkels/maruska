@@ -22,8 +22,7 @@ use utils::show_version_and_exit;
 
 const USAGE: &'static str = "
 Usage:
-  maruska --host=HOST
-  maruska [options]
+  maruska ( --host=HOST | --help | --version )
 
 Options:
   -H --host HOST        Hostname of marietje server

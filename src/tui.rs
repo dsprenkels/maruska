@@ -48,9 +48,11 @@ macro_rules! clean_assert {
 
 const CMD_USERNAME: &'static str = "username";
 const CMD_PASSWORD: &'static str = "password";
-const COMMANDS: [&'static str; 2] = [
-    CMD_USERNAME, CMD_PASSWORD,
+const CMD_QUIT: &'static str = "quit";
+const COMMANDS: [&'static str; 3] = [
+    CMD_USERNAME, CMD_PASSWORD, CMD_QUIT,
 ];
+const STATUS_WIDTH: usize = 38;
 const STATUS_TIMEOUT_MILLIS: u64 = 5000;
 const QM_BUFFER_SIZE: usize = 5000;
 
@@ -175,18 +177,22 @@ impl TUI {
         // TODO show some visual feedback "logging in..."
     }
 
-    fn do_query(&mut self) {
-        if !self.query.starts_with('/') {
-            return;
+    fn update_client_query(&mut self) {
+        if self.query.starts_with('/') {
+            self.client.update_query(Some(&self.query[1..]), self.results_offset + QM_BUFFER_SIZE);
+        } else {
+            self.client.update_query(None, 0);
         }
-        self.client.query_media(&self.query[1..], self.results_offset + QM_BUFFER_SIZE);
     }
 
-    fn do_request(&mut self) {
+    fn do_request(&mut self) -> Result<(), TUIError> {
         clean_assert!(self.query.starts_with('/'));
         let media_key = {
             let ref results = self.client.get_qm_results().0;
-            if results.len() == 0 { return; }
+            if results.len() == 0 {
+                self.status.insert((), (Cow::from("No song selected"), StatusType::Warning));
+                return Ok(());
+            }
             results[self.results_focus].key.clone()
         };
 
@@ -199,9 +205,10 @@ impl TUI {
                 self.query.push_str(":username ");
             },
         }
+        Ok(())
     }
 
-    fn do_command(&mut self) {
+    fn do_command(&mut self) -> Result<(), TUIError> {
         let split_command: Vec<String> = {
             clean_assert!(self.query.starts_with(':'));
             self.query[1..].splitn(2, char::is_whitespace).map(|x| x.to_string()).collect()
@@ -209,12 +216,13 @@ impl TUI {
         match (split_command.get(0).map(|x| &x[..]), split_command.get(1)) {
             (Some(CMD_USERNAME), rest) => self.do_command_username(rest),
             (Some(CMD_PASSWORD), rest) => self.do_command_password(rest),
+            (Some(CMD_QUIT), rest) => self.do_command_quit(rest),
             (Some(command_type), _) => cleanup!(panic!("unsupported command type: {}", command_type)),
             (None, _) => cleanup!(unreachable!()),
         }
     }
 
-    fn do_command_username(&mut self, username_option: Option<&String>) {
+    fn do_command_username(&mut self, username_option: Option<&String>) -> Result<(), TUIError> {
         let username = username_option.unwrap_or_else(|| cleanup!(panic!("no username provided")));
         self.username = Some(username.to_string());
         // TODO show some visual feedback "username set to {}"
@@ -222,9 +230,10 @@ impl TUI {
         if !self.try_login() {
             self.query.push_str(":password ");
         }
+        Ok(())
     }
 
-    fn do_command_password(&mut self, password_option: Option<&String>) {
+    fn do_command_password(&mut self, password_option: Option<&String>) -> Result<(), TUIError> {
         if let Some(ref password) = password_option {
             self.secret = Some(Secret::PasswordHash(md5(password)));
             self.status.insert((), (Cow::from("Logging in"), StatusType::Info));
@@ -233,6 +242,11 @@ impl TUI {
             self.status.insert((), (Cow::from("No password provided"), StatusType::Error));
         }
         self.query.clear();
+        Ok(())
+    }
+
+    fn do_command_quit(&self, _: Option<&String>) -> Result<(), TUIError> {
+        Err(TUIError::Quit)
     }
 
     fn move_focus(&mut self, x: isize, fix_offset: bool) {
@@ -267,8 +281,7 @@ impl TUI {
         self.results_offset = bounded(self.results_focus.saturating_sub(h as usize - 1),
                                       new_results_offset, self.results_focus);
 
-        // requery the client
-        self.do_query();
+        self.update_client_query();
     }
 
     pub fn handle_message_from_client(&mut self, message: &Json) -> Result<(), ClientError> {
@@ -386,7 +399,7 @@ impl TUI {
 
     fn handle_input_backspace(&mut self, _: u16) -> Result<(), TUIError> {
         self.query.pop();
-        self.do_query();
+        self.update_client_query();
         Ok(())
     }
 
@@ -395,9 +408,8 @@ impl TUI {
             &Some('/') => self.do_request(),
             &Some(':') => self.do_command(),
             &Some(_) => cleanup!(unreachable!()),
-            &None => {}, // do nothing
+            &None => Ok(()), // do nothing
         }
-        Ok(())
     }
 
     fn handle_input_delword(&mut self, _: u16) -> Result<(), TUIError> {
@@ -409,6 +421,7 @@ impl TUI {
             Some((start, _)) => self.query.truncate(max(start, 1)),
             None => {},
         };
+        self.update_client_query();
         Ok(())
     }
 
@@ -418,6 +431,7 @@ impl TUI {
         } else {
             self.query.clear();
         }
+        self.update_client_query();
         Ok(())
     }
 
@@ -428,7 +442,7 @@ impl TUI {
             match ch {
                 47 => {
                     self.query.push('/');
-                    self.do_query();
+                    self.update_client_query();
                 },
                 58 => self.query.push(':'),
                 _ => cleanup!(unreachable!()),
@@ -446,7 +460,7 @@ impl TUI {
             },
             None => cleanup!(unreachable!()),
         }
-        self.do_query();
+        self.update_client_query();
         Ok(())
     }
 
@@ -552,7 +566,7 @@ impl TUI {
         // draw query field
         let (w, h) = self.get_viewport_size();
         let maxwidth: usize = if self.status.peek(&()).is_some() {
-            w as usize / 2
+            (w as usize).saturating_sub(STATUS_WIDTH)
         } else {
             w as usize
         };
@@ -585,7 +599,7 @@ impl TUI {
         } else {
             unsafe {
                 self.print(0, h, TB_DEFAULT, TB_DEFAULT, &query,
-                           maxwidth as usize, TB_DEFAULT, TB_DEFAULT, "...");
+                           maxwidth as usize, TB_DEFAULT, TB_DEFAULT, "$");
             }
         }
 
@@ -598,8 +612,8 @@ impl TUI {
     fn draw_status(&self) {
         if let Some(&(ref status, ref ty)) = self.status.peek(&()) {
             let (w, h) = self.get_viewport_size();
-            let offset = w / 2;
-            let maxwidth = w - offset;
+            let offset = (w as usize).saturating_sub(STATUS_WIDTH);
+            let maxwidth = w as usize - offset;
             let fg = match *ty {
                 StatusType::Info => TB_BLUE,
                 StatusType::Success => TB_GREEN,
@@ -609,7 +623,7 @@ impl TUI {
             let bg = TB_DEFAULT;
             unsafe {
                 self.print(offset as i32, h, fg, bg, &status,
-                           maxwidth as usize, TB_BLUE, bg, "$");
+                           maxwidth, TB_BLUE, bg, "$");
             }
         }
     }
@@ -650,9 +664,9 @@ impl Drop for TUI {
 }
 
 fn unwrap_requested_by<'a>(requested_by: &'a Option<String>) -> &'a str {
-    match requested_by {
-        &Some(ref by) => &by,
-        &None => "marietje"
+    match *requested_by {
+        Some(ref by) => &by,
+        None => "marietje"
     }
 }
 
@@ -715,7 +729,7 @@ fn fit_columns(rows: &Vec<Vec<String>>, expand_factors: &[f32], fit_width: usize
             0
         ).collect(), // enough space for all rows
         Err(i) => cols.iter().map(|x| {
-            if let Some(val) = x.get(i-1) {
+            if let Some(val) = x.get(i - 1) {
                 *val
             } else {
                 cleanup!(panic!("array indexing failure"));
@@ -724,7 +738,7 @@ fn fit_columns(rows: &Vec<Vec<String>>, expand_factors: &[f32], fit_width: usize
     };
 
     let space_left = fit_width - col_widths.iter().fold(0, |a, b| a + b);
-    let expand_units = space_left as f32 / expand_factors.iter().fold(0_f32, |a, b| a + b);
+    let expand_units = space_left as f32 / expand_factors.iter().fold(0f32, |a, b| a + b);
     col_widths.iter()
         .zip(expand_factors)
         .map(|(w, f)| w + ((expand_units*f).round() as usize))

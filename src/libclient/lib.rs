@@ -110,19 +110,21 @@ pub struct Client {
     /// The current query_media query, if present
     qm_query: Option<String>,
 
-    /// The current query_media token, so that we will know if the results match the last query.
     /// And the amount of results we requested for this token, so that we will know if we have
     /// reached the end of the results list.
-    qm_token_and_count: (u64, usize),
+    qm_requested_count: Option<usize>,
+
+    /// The current query_media token, so that we will know if the results match the last query.
+    qm_token: usize,
 
     /// The amount of results we want to have for this query
     qm_results_count: usize,
 
-    /// Are we done loading all the results?
+    /// true if we have received all results for the current query
     qm_done: bool,
 
     /// Are we currently waiting for query results?
-    waiting_for_qm_results: bool,
+    qm_waiting_for_token: Option<usize>,
 
     /// This is a list of all messages that should be sent after we are logged in
     deferred_after_login: Vec<Json>,
@@ -149,10 +151,11 @@ impl Client {
             deferred_login: None,
             qm_results: Vec::new(),
             qm_query: None,
-            qm_token_and_count: (0, 0),
+            qm_token: 0,
             qm_results_count: 0,
+            qm_requested_count: None,
             qm_done: true,
-            waiting_for_qm_results: false,
+            qm_waiting_for_token: None,
             deferred_after_login: Vec::new()
         }, recv_message_r))
     }
@@ -291,15 +294,16 @@ impl Client {
         let token = try!(msg.as_object()
             .and_then(|x| x.get("token"))
             .and_then(|x| x.as_u64())
+            .map(|x| x as usize)
             .ok_or_else(&fail)
         );
-        if token != self.qm_token_and_count.0 {
+        if self.qm_waiting_for_token.map_or(false, |x| x == token) {
+            self.qm_waiting_for_token = None;
+        } else {
+            // assert that this token is outdated
+            assert!(self.qm_waiting_for_token.map_or(true, |x| token < x));
             return Ok(Message::QueryMediaResults);
         }
-        // FIXME Currently, there is no check whether there is already a new query
-        //       from the user (UI). The communication model might need some reviewing
-        //       before this can be fixed correctly.
-        self.waiting_for_qm_results = false;
 
         let results_array = try!(msg.as_object()
             .and_then(|x| x.get("results"))
@@ -312,13 +316,14 @@ impl Client {
             self.qm_results.push(decode::<Media>(&format!("{}", x)).unwrap());
         }
 
-        if results_array.len() >= self.qm_token_and_count.1 &&
-           self.qm_results_count > self.qm_results.len() {
-            // we need to do another request
-            self.query_media_inner();
+        if results_array.len() >= self.qm_requested_count.unwrap() {
+            // response was saturated
+            self.maybe_query_media();
         } else {
             self.qm_done = true;
         }
+
+        self.maybe_query_media();
         Ok(Message::QueryMediaResults)
     }
 
@@ -369,43 +374,59 @@ impl Client {
         }
     }
 
-    pub fn query_media(&mut self, query: &str, count: usize) {
-        if self.qm_query.as_ref().map_or(true, |x| x != query) {
-            self.qm_results.clear();
-            self.qm_done = false;
-            self.qm_query = Some(String::from(query));
-        }
-        self.qm_results_count = count;
-
-        // Don't request eagerly
-        if self.qm_results.len() < count && !self.qm_done {
-            self.query_media_inner();
+    pub fn update_query(&mut self, new_query: Option<&str>, count: usize) {
+        // At this point, we could be in any state (so no preconditions to be checked)
+        match new_query {
+            new_query if self.qm_query.as_ref().map(|x| x.as_str()) == new_query &&
+                         count > self.qm_results_count => {
+                self.qm_results_count = count;
+                self.maybe_query_media();
+            },
+            new_query if self.qm_query.as_ref().map(|x| x.as_str()) == new_query => {},
+            new_query => {
+                self.qm_done = false;
+                self.qm_query = new_query.map(|x| x.to_string());
+                self.qm_requested_count = None;
+                self.qm_results_count = count;
+                self.qm_results.clear();
+                self.qm_waiting_for_token = None;
+                self.maybe_query_media();
+            }
         }
     }
 
-    fn query_media_inner(&mut self) {
-        use std::cmp::min;
-
-        if self.waiting_for_qm_results {
-            return;
+    fn maybe_query_media(&mut self) {
+        match () {
+            _ if self.qm_done => {},
+            _ if self.qm_query.is_none() => {},
+            _ if self.qm_requested_count.map_or(false, |x| x >= self.qm_results_count) => {},
+            _ if self.qm_results.len() >= self.qm_results_count => {},
+            _ if self.qm_waiting_for_token.is_some() => {},
+            _ => self.query_media(),
         }
 
+    }
+
+    fn query_media(&mut self) {
+        use std::cmp::min;
+        assert!(self.qm_query.is_some());
+
         let skip = self.qm_results.len();
-        self.qm_token_and_count.0 += 1;
+        self.qm_token += 1;
 
         // We don't want to make requests with more than `qm_chunk_size()` results,
         // because it would introduce too much lag. So if the user (interface)
         // requests more than `count` results, we do them in subsequent requests.
-        self.qm_token_and_count.1 = min(self.qm_results_count - skip, self.qm_chunk_size());
+        self.qm_requested_count = Some(min(self.qm_results_count - skip, self.qm_chunk_size()));
 
         let b = make_json_hashmap!(
             "type" => "query_media",
             "query" => self.qm_query,
-            "token" => self.qm_token_and_count.0,
+            "token" => self.qm_token,
             "skip" => skip,
-            "count" => self.qm_token_and_count.1
+            "count" => self.qm_requested_count
         );
-        self.waiting_for_qm_results = true;
+        self.qm_waiting_for_token = Some(self.qm_token);
         self.send_message(&b)
     }
 

@@ -1,4 +1,4 @@
-use rustc_serialize::{Decodable, Decoder};
+use rustc_serialize::{Decodable, Decoder, Encodable, Encoder};
 use time::{Duration, Timespec, get_time};
 
 
@@ -44,6 +44,27 @@ impl Decodable for Media {
     }
 }
 
+impl Encodable for Media {
+    fn encode<S: Encoder>(&self, s: &mut S) -> Result<(), S::Error> {
+        #[allow(non_snake_case)]
+        #[derive(RustcEncodable)]
+        struct EncodeMedia {
+            key: String,
+            artist: String,
+            title: String,
+            length: i64,
+            uploadedByKey: String,
+        }
+        let m = EncodeMedia {
+            key: self.key.clone(),
+            artist: self.artist.clone(),
+            title: self.title.clone(),
+            length: self.length.num_seconds(),
+            uploadedByKey: self.uploaded_by.clone(),
+        };
+        m.encode(s)
+    }
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Playing {
