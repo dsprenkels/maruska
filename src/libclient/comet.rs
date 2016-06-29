@@ -56,7 +56,7 @@ impl Error for CometError {
 }
 
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct CometChannel {
     /// hyper client instance
     client: Arc<hyper::Client>,

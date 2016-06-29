@@ -71,6 +71,7 @@ impl Error for ClientError {
     }
 }
 
+#[derive(Clone, Debug)]
 pub struct Client {
     // The wrapped comet channel
     channel: CometChannel,

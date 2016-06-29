@@ -10,6 +10,7 @@ use chan;
 use lru_time_cache::LruCache;
 use regex::Regex;
 use rustc_serialize::json::Json;
+use strsim::levenshtein;
 use termbox::*;
 use time::{Duration, get_time};
 
@@ -52,7 +53,8 @@ const CMD_QUIT: &'static str = "quit";
 const COMMANDS: [&'static str; 3] = [
     CMD_USERNAME, CMD_PASSWORD, CMD_QUIT,
 ];
-const STATUS_WIDTH: usize = 38;
+const MIN_STATUS_WIDTH: usize = 30;
+const MAX_STATUS_WIDTH: usize = 60;
 const STATUS_TIMEOUT_MILLIS: u64 = 5000;
 const QM_BUFFER_SIZE: usize = 5000;
 
@@ -120,11 +122,12 @@ impl TUI {
         client.follow_all();
         client.serve();
 
-
         // initialize user interface
         unsafe { tb_init(); }
 
         let status_ttl = Duration::from_millis(STATUS_TIMEOUT_MILLIS);
+        let mut status = LruCache::with_expiry_duration_and_capacity(status_ttl, 1);
+        status.insert((), (Cow::from(format!("Connected to {}", url)), StatusType::Success));
         let tui = TUI {
             client: client,
             username: None,
@@ -132,7 +135,7 @@ impl TUI {
             results_offset: 0,
             results_focus: 0,
             query: String::new(),
-            status: LruCache::with_expiry_duration_and_capacity(status_ttl, 1),
+            status: status,
         };
         let tui_r = TUI::serve_events();
 
@@ -209,23 +212,34 @@ impl TUI {
     }
 
     fn do_command(&mut self) -> Result<(), TUIError> {
-        let split_command: Vec<String> = {
-            clean_assert!(self.query.starts_with(':'));
-            self.query[1..].splitn(2, char::is_whitespace).map(|x| x.to_string()).collect()
+        lazy_static! {
+            static ref WORD: Regex = Regex::new(r#"\S+"#).unwrap();
+        }
+        clean_assert!(self.query.starts_with(':'));
+        let (_, idx) = if let Some(m) = WORD.find(&self.query[1..]) {
+            m
+        } else {
+            return Ok(()) // empty command, do nothing
         };
-        match (split_command.get(0).map(|x| &x[..]), split_command.get(1)) {
-            (Some(CMD_USERNAME), rest) => self.do_command_username(rest),
-            (Some(CMD_PASSWORD), rest) => self.do_command_password(rest),
-            (Some(CMD_QUIT), rest) => self.do_command_quit(rest),
-            (Some(command_type), _) => cleanup!(panic!("unsupported command type: {}", command_type)),
-            (None, _) => cleanup!(unreachable!()),
+        let query = self.query.clone();
+        let (command, rest) = query[1..].split_at(idx);
+        let args = if rest.len() >= 1 {
+            Some(&rest[1..])
+        } else {
+            None
+        };
+
+        match (command, args) {
+            (CMD_USERNAME, args) => self.do_command_username(args),
+            (CMD_PASSWORD, args) => self.do_command_password(args),
+            (CMD_QUIT, args) => self.do_command_quit(args),
+            (cmd, args) => self.do_invalid_command(cmd, args),
         }
     }
 
-    fn do_command_username(&mut self, username_option: Option<&String>) -> Result<(), TUIError> {
+    fn do_command_username(&mut self, username_option: Option<&str>) -> Result<(), TUIError> {
         let username = username_option.unwrap_or_else(|| cleanup!(panic!("no username provided")));
         self.username = Some(username.to_string());
-        // TODO show some visual feedback "username set to {}"
         self.query.clear();
         if !self.try_login() {
             self.query.push_str(":password ");
@@ -233,7 +247,7 @@ impl TUI {
         Ok(())
     }
 
-    fn do_command_password(&mut self, password_option: Option<&String>) -> Result<(), TUIError> {
+    fn do_command_password(&mut self, password_option: Option<&str>) -> Result<(), TUIError> {
         if let Some(ref password) = password_option {
             self.secret = Some(Secret::PasswordHash(md5(password)));
             self.status.insert((), (Cow::from("Logging in"), StatusType::Info));
@@ -245,8 +259,22 @@ impl TUI {
         Ok(())
     }
 
-    fn do_command_quit(&self, _: Option<&String>) -> Result<(), TUIError> {
+    fn do_command_quit(&self, _: Option<&str>) -> Result<(), TUIError> {
         Err(TUIError::Quit)
+    }
+
+    fn do_invalid_command(&mut self, cmd: &str, _: Option<&str>) -> Result<(), TUIError> {
+        let commands = COMMANDS;
+        let (other_cmd, dist) = commands.iter().map(|x| (x, levenshtein(x, &cmd)))
+                                               .min_by_key(|x| x.1).unwrap();
+        let msg = if dist < 3 {
+            format!(r#"Not a command. Did you mean "{}"?"#, other_cmd)
+        } else {
+            format!(r#"Not a maruska command: "{}""#, cmd)
+        };
+        self.status.insert((), (Cow::from(msg), StatusType::Error));
+        self.query.clear();
+        Ok(())
     }
 
     fn move_focus(&mut self, x: isize, fix_offset: bool) {
@@ -466,7 +494,7 @@ impl TUI {
 
     unsafe fn print(&self, x: i32, y: i32, fg: u16, bg: u16, s: &str, maxlen: usize,
                              trunc_fg: u16, trunc_bg: u16, trunc_s: &str) {
-        if s.len() < maxlen || s.is_empty() {
+        if s.len() <= maxlen || s.is_empty() {
             for (i, ch) in s.chars().chain(repeat(' ')).take(maxlen).enumerate() {
                 tb_change_cell(x+i as i32, y, ch as u32, fg, bg);
             }
@@ -493,19 +521,21 @@ impl TUI {
         unsafe { tb_present(); }
     }
 
-    fn draw_current_requests(&mut self) {
+    fn draw_current_requests<'a>(&'a mut self) {
         let (w, h) = self.get_viewport_size();
-        let mut str_table: Vec<Vec<String>> = Vec::new();
+        let mut str_table: Vec<Vec<Cow<'a, str>>> = Vec::new();
 
         // first line shows currently playing song
         let mut queue_length = Duration::zero();
         str_table.push(if let &Some(ref playing) = self.client.get_playing() {
             let requested_by = String::from(unwrap_requested_by(&playing.requested_by));
             queue_length = queue_length + (playing.end_time - get_time());
-            vec!(requested_by, playing.media.artist.clone(), playing.media.title.clone(),
-                 format_duration(queue_length))
+            vec!(Cow::from(requested_by),
+                 Cow::from(playing.media.artist.as_ref()),
+                 Cow::from(playing.media.title.as_ref()),
+                 Cow::from(format_duration(queue_length)))
         } else {
-            vec!(String::new(), String::new(), String::new(), String::new())
+            repeat(Cow::from("")).take(4).collect()
         });
 
         // rest shows the current request queue, offset is ignored (-> 0)
@@ -514,8 +544,10 @@ impl TUI {
                 let requested_by = String::from(unwrap_requested_by(&request.by));
                 let media = &request.media;
                 queue_length = queue_length + media.length;;
-                str_table.push(vec!(requested_by, media.artist.clone(), media.title.clone(),
-                                    format_duration(queue_length)))
+                str_table.push(vec!(Cow::from(requested_by),
+                                    Cow::from(media.artist.clone()),
+                                    Cow::from(media.title.clone()),
+                                    Cow::from(format_duration(queue_length))))
             }
         }
 
@@ -523,40 +555,59 @@ impl TUI {
         let col_widths = fit_columns(&str_table, &[1f32, 4f32, 4f32, 1f32], w as usize);
 
         // do the actual drawing
-        self.draw_table(&str_table, &col_widths, None);
+        self.draw_table(0, str_table.iter(), &col_widths, (TB_DEFAULT, TB_BLUE, TB_DEFAULT), None);
     }
 
-    fn draw_search_results(&mut self) {
-        // TODO Calculate a range to print here, based on the value of
-        //      self.results_focus and results.len() (and self.get_height())
-        //      and maybe update self.results_offset accordingly
+    fn draw_search_results<'a>(&'a mut self) {
         // TODO Show blue tildes '~' (as in vim) at the end of the range.
-        //      Futhermore, allow scrolling past the EOF
         let (w, h) = self.get_viewport_size();
-        let mut str_table: Vec<Vec<String>> = Vec::new();
+        let mut str_table: Vec<Vec<Cow<'a, str>>> = Vec::new();
 
         let (results, qm_done) = self.client.get_qm_results();
         for media in results.iter().skip(self.results_offset).take(h as usize) {
-            str_table.push(vec!(media.artist.clone(), media.title.clone()));
+            str_table.push(vec!(Cow::from(media.artist.as_ref()),
+                                Cow::from(media.title.as_ref())));
         }
 
         let col_widths = fit_columns(&str_table, &[1f32, 1f32], w as usize);
-        self.draw_table(&str_table, &col_widths, Some(self.results_focus - self.results_offset));
+        let selected = self.results_focus - self.results_offset;
+        let selection = Some((selected, (TB_BLACK, TB_BLUE, TB_WHITE)));
+        self.draw_table(0, str_table.iter(), &col_widths, (TB_DEFAULT, TB_BLUE, TB_DEFAULT),
+                        selection);
+
+                        // (TB_BLACK, TB_BLUE, TB_WHITE)
+                        // (TB_DEFAULT, TB_BLUE, TB_DEFAULT)
+
+
+        if *qm_done {
+            // Fill up the rest with blue tildes to indicate end-of-file
+            let row = vec!(Cow::from("~"));
+            let from_row = results.iter()
+                              .skip(self.results_offset)
+                              .take(h as usize)
+                              .count();
+            assert!(from_row <= h as usize);
+
+            let str_table = repeat(&row).take(h as usize - from_row);
+            let style = (TB_BOLD | TB_BLUE, TB_BOLD | TB_BLUE, TB_DEFAULT);
+            self.draw_table(from_row, str_table, &col_widths, style, None);
+        }
     }
 
-    fn draw_table(&self, str_table: &Vec<Vec<String>>, col_widths: &Vec<usize>,
-                  selected: Option<usize>) {
-        for (y, row) in str_table.iter().enumerate() {
-            let (fg, fg2, bg) = if selected.map_or(false, |s| s == y) {
-                (TB_BLACK, TB_BLUE, TB_WHITE)
-            } else {
-                (TB_DEFAULT, TB_BLUE, TB_DEFAULT)
-            };
-            unsafe {
-                for (j, cell) in row.iter().enumerate() {
-                    let x = col_widths.iter().take(j).fold(0, |a, b| a + b);
-                    let maxlen = col_widths[j];
-                    self.print(x as i32, y as i32, fg, bg, cell, maxlen, fg2, bg, "$");
+    fn draw_table<'a, T>(&self, offset: usize, str_table: T, col_widths: &Vec<usize>,
+                         style: (u16, u16, u16),
+                         selected: Option<(usize, (u16, u16, u16))>)
+        where T : Iterator<Item=&'a Vec<Cow<'a, str>>> {
+        for (y, row) in str_table.enumerate() {
+            let (fg, fg2, bg) = selected.map_or(style, |(s, selected_style)| {
+                if s == y { selected_style } else { style }
+            });
+            for (j, cell) in row.iter().enumerate() {
+                assert!(j <= col_widths.len());
+                let x = col_widths.iter().take(j).fold(0, |a, b| a + b);
+                let maxlen = col_widths[j];
+                unsafe {
+                    self.print(x as i32, (y + offset) as i32, fg, bg, cell, maxlen, fg2, bg, "$");
                 }
             }
         }
@@ -566,7 +617,7 @@ impl TUI {
         // draw query field
         let (w, h) = self.get_viewport_size();
         let maxwidth: usize = if self.status.peek(&()).is_some() {
-            (w as usize).saturating_sub(STATUS_WIDTH)
+            (w as usize).saturating_sub(MAX_STATUS_WIDTH)
         } else {
             w as usize
         };
@@ -612,7 +663,8 @@ impl TUI {
     fn draw_status(&self) {
         if let Some(&(ref status, ref ty)) = self.status.peek(&()) {
             let (w, h) = self.get_viewport_size();
-            let offset = (w as usize).saturating_sub(STATUS_WIDTH);
+            let status_width = min(max(MIN_STATUS_WIDTH, status.len()), MAX_STATUS_WIDTH);
+            let offset = (w as usize).saturating_sub(status_width);
             let maxwidth = w as usize - offset;
             let fg = match *ty {
                 StatusType::Info => TB_BLUE,
@@ -680,7 +732,7 @@ fn format_duration(d: Duration) -> String {
     }
 }
 
-fn fit_columns(rows: &Vec<Vec<String>>, expand_factors: &[f32], fit_width: usize) -> Vec<usize> {
+fn fit_columns<'a>(rows: &Vec<Vec<Cow<'a, str>>>, expand_factors: &[f32], fit_width: usize) -> Vec<usize> {
     let col_count = expand_factors.len();
     let mut cols = {
         let row_count = rows.len();
