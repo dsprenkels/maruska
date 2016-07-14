@@ -16,6 +16,8 @@ mod store;
 mod tui;
 mod utils;
 
+use std::str::FromStr;
+
 use docopt::Docopt;
 
 use tui::{TUI, TUIError};
@@ -60,6 +62,7 @@ fn main() {
     let (client_r, tui_r, tick_r) = event_receivers;
 
     let mut exit_err: Option<TUIError> = None;
+    let mut seconds_inactive = 0;
     loop {
         chan_select! {
             client_r.recv() -> message => {
@@ -69,14 +72,23 @@ fn main() {
                 }
             },
             tui_r.recv() -> event => match tui.handle_event(event.unwrap()) {
-                Ok(()) => {},
+                Ok(()) => {
+                    seconds_inactive = 0;
+                },
                 Err(TUIError::Quit) => break,
                 Err(err) => {
                     exit_err = Some(err);
                     break;
                 }
             },
-            tick_r.recv() => {},
+            tick_r.recv() => {
+                seconds_inactive += 1;
+                if std::env::var("TMOUT").ok()
+                                         .and_then(|x| usize::from_str(&x).ok())
+                                         .map_or(false, |x| seconds_inactive >= x) {
+                    break;
+                }
+            },
         }
         tui.draw();
     }
