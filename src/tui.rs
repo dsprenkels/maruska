@@ -724,9 +724,9 @@ fn unwrap_requested_by<'a>(requested_by: &'a Option<String>) -> &'a str {
 
 fn format_duration(d: Duration) -> String {
     match () {
-        _ if d.num_days() != 0 => format!("{}d{}:{:02}:{:02}",
+        _ if d.num_days() != 0 => format!("{}d{:02}:{:02}:{:02}",
             d.num_days(), d.num_hours() % 24, d.num_minutes() % 60, d.num_seconds() % 60),
-        _ if d.num_hours() != 0 => format!("{}:{}:{:02}",
+        _ if d.num_hours() != 0 => format!("{}:{:02}:{:02}",
             d.num_hours(), d.num_minutes() % 60, d.num_seconds() % 60),
         _ =>  format!("{}:{:02}", d.num_minutes(), d.num_seconds() % 60)
     }
