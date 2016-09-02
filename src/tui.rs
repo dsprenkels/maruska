@@ -621,35 +621,49 @@ impl TUI {
         } else {
             w as usize
         };
-        let ref substr = format!(":{} ", CMD_PASSWORD);
-        let query = if self.query.starts_with(substr) {
-            let substr_len = substr.len();
-            format!(":{} {}", CMD_PASSWORD, self.query
-                .chars()
-                .skip(substr_len)
-                .map(|_| '*')
-                .collect::<String>())
-        } else {
-            self.query.clone()
-        };
 
-        if let Some(cmd) = COMMANDS.iter().fold(None, |opt, cmd| opt.or_else(
-            || if query == format!(":{}", cmd) ||
-                  query.starts_with(&format!(":{} ", cmd)) { Some(cmd) } else { None }
-        )) {
-            // print command bold
-            let cmdlen = cmd.len();
-            unsafe {
-                self.print(0, h, TB_DEFAULT, TB_DEFAULT, &query[0..1], maxwidth,
-                           TB_DEFAULT, TB_BLUE, "$");
-                self.print(1, h, TB_BOLD, TB_DEFAULT, &query[1..1+cmdlen], maxwidth - 1,
-                           TB_DEFAULT, TB_BLUE, "$");
-                self.print(cmdlen as i32 + 1, h, TB_DEFAULT, TB_DEFAULT, &query[1+cmdlen..],
-                           maxwidth - 1 - cmdlen, TB_DEFAULT, TB_BLUE, "$");
+        if self.query.starts_with(':') {
+            // hide possible password argument
+            let ref substr = format!(":{} ", CMD_PASSWORD);
+            let ref query = if self.query.starts_with(substr) {
+                let substr_len = substr.len();
+                Cow::Owned(format!(":{} {}", CMD_PASSWORD, self.query
+                    .chars()
+                    .skip(substr_len)
+                    .map(|_| '*')
+                    .collect::<String>()))
+            } else {
+                Cow::Borrowed(&self.query)
+            };
+
+            // draw command
+            let commands = COMMANDS;
+            let command: Option<&&str> = commands.iter().filter(|cmd|
+                self.query[1..].starts_with(&cmd[..])).next();
+            if let Some(cmd) = command {
+                let cmdlen = cmd.len();
+                unsafe {
+                    self.print(0, h, TB_DEFAULT, TB_DEFAULT, &query[0..1], maxwidth,
+                               TB_DEFAULT, TB_BLUE, "$");
+                    self.print(1, h, TB_BOLD, TB_DEFAULT, &query[1..1+cmdlen], maxwidth - 1,
+                               TB_DEFAULT, TB_BLUE, "$");
+                    self.print(cmdlen as i32 + 1, h, TB_DEFAULT, TB_DEFAULT, &query[1+cmdlen..],
+                               maxwidth - 1 - cmdlen, TB_DEFAULT, TB_BLUE, "$");
+                }
+            } else {
+                unsafe {
+                    self.print(0, h, TB_DEFAULT, TB_DEFAULT, &query,
+                               maxwidth as usize, TB_DEFAULT, TB_DEFAULT, "$");
+                }
             }
-        } else {
+
+
+        } else if self.query.starts_with('/') {
+            // draw search query
             unsafe {
-                self.print(0, h, TB_DEFAULT, TB_DEFAULT, &query,
+                self.print(0, h, TB_DEFAULT, TB_DEFAULT, &self.query[0..1],
+                           maxwidth as usize, TB_DEFAULT, TB_DEFAULT, "$");
+                self.print(1, h, TB_BOLD, TB_DEFAULT, &self.query[1..],
                            maxwidth as usize, TB_DEFAULT, TB_DEFAULT, "$");
             }
         }
