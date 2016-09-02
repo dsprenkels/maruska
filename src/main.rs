@@ -21,9 +21,12 @@ use docopt::Docopt;
 use tui::{TUI, TUIError};
 use utils::show_version_and_exit;
 
+const DEFAULT_HOST: &'static str = "http://marietje-noord.marie-curie.nl/api";
+
 const USAGE: &'static str = "
 Usage:
-  maruska ( --host=HOST | --help | --version )
+  maruska [ --host=HOST ]
+  maruska ( --help | --version )
 
 Options:
   -H --host HOST        Hostname of marietje server
@@ -33,7 +36,7 @@ Options:
 
 #[derive(Debug, RustcDecodable)]
 pub struct Args {
-    flag_host: String,
+    flag_host: Option<String>,
     flag_help: bool,
     flag_version: bool,
 }
@@ -53,7 +56,8 @@ fn main() {
         show_version_and_exit();
     }
 
-    let (mut tui, event_receivers) = match TUI::new(&args.flag_host) {
+    let host = &args.flag_host.unwrap_or_else(|| String::from(DEFAULT_HOST));
+    let (mut tui, event_receivers) = match TUI::new(host) {
         Ok((tui, event_receivers)) => (tui, event_receivers),
         Err(err) => panic!("initialization error: {}", err),
     };
