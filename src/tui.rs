@@ -1,8 +1,11 @@
 use std::borrow::Cow;
 use std::char;
 use std::cmp::{max, min};
+use std::collections::BTreeMap;
+use std::env;
 use std::error::Error;
 use std::fmt;
+use std::fs;
 use std::iter::repeat;
 use std::thread;
 
@@ -13,8 +16,10 @@ use rustc_serialize::json::Json;
 use strsim::levenshtein;
 use termbox::*;
 use time::{Duration, get_time};
+use toml;
 
 use libclient::{Client, ClientError, md5, Message, RequestStatus};
+use store;
 
 macro_rules! cleanup {
     ( $ret:expr ) => {
@@ -67,6 +72,15 @@ pub enum TUIError {
 enum Secret {
     AccessKey(String),
     PasswordHash(String),
+}
+
+impl fmt::Debug for Secret {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match *self {
+            Secret::AccessKey(_) => write!(f, "Secret::AccessKey(*****)"),
+            Secret::PasswordHash(_) => write!(f, "Secret::PasswordHash(*****)"),
+        }
+    }
 }
 
 enum StatusType {
@@ -122,13 +136,20 @@ impl TUI {
         client.follow_all();
         client.serve();
 
+        // initialize (user) event listener
+        let tui_r = TUI::serve_events();
+
+        // initialize event clock
+        let tick_r = chan::tick(Duration::from_secs(1));
+
+
         // initialize user interface
         unsafe { tb_init(); }
 
         let status_ttl = Duration::from_millis(STATUS_TIMEOUT_MILLIS);
         let mut status = LruCache::with_expiry_duration_and_capacity(status_ttl, 1);
         status.insert((), (Cow::from(format!("Connected to {}", url)), StatusType::Success));
-        let tui = TUI {
+        let mut tui = TUI {
             client: client,
             username: None,
             secret: None,
@@ -137,9 +158,9 @@ impl TUI {
             query: String::new(),
             status: status,
         };
-        let tui_r = TUI::serve_events();
+        tui.load_credentials();
+        tui.try_login();
 
-        let tick_r = chan::tick(Duration::from_secs(1));
         Ok((tui, (client_r, tui_r, tick_r)))
     }
 
@@ -319,6 +340,7 @@ impl TUI {
             },
             Message::Login => {
                 self.status.insert((), (Cow::from("Succesfully logged in"), StatusType::Success));
+                self.save_credentials(); // save creds for later use
             },
             Message::LoginError(ref msg) if msg == "User does not exist" => {
                 let msg = format!("Login failed: user \"{}\" does not exist",
@@ -345,6 +367,67 @@ impl TUI {
         })
     }
 
+    fn save_credentials(&self) {
+        if let Some(home_dir) = env::home_dir() {
+            let cache_dir = home_dir.join(".cache");;
+            let config_filename = cache_dir.join("maruska.toml");
+            let mut store_obj = if let Ok(mut store_file) = fs::File::open(&config_filename) {
+                store::load(&mut store_file).unwrap_or_else(|_| BTreeMap::new())
+            } else {
+                BTreeMap::new()
+            };
+
+            let mut toml_creds = BTreeMap::new();
+            let toml_username = toml::Value::String(self.username.clone().unwrap());
+            toml_creds.insert("username".to_string(), toml_username);
+            match self.secret {
+                Some(Secret::AccessKey(ref x)) => {
+                    let toml = toml::Value::String(x.clone());
+                    toml_creds.insert("access_key".to_string(), toml);
+                },
+                Some(Secret::PasswordHash(ref x)) => {
+                    let toml = toml::Value::String(x.clone());
+                    toml_creds.insert("password_hash".to_string(), toml);
+                },
+                None => return,
+            }
+            store_obj.insert(self.client.get_url(), toml::Value::Table(toml_creds));
+
+            if fs::create_dir_all(cache_dir).is_err() {
+                return; // fail silently on IO error
+            };
+            if let Ok(mut store_file) = fs::File::create(&config_filename) {
+                if store::save(store_obj, &mut store_file).is_err() {
+                    return; // fail silently on IO error
+                };
+            } else {
+                error!("Could not open file \"{:?}\" for writing", config_filename);
+            }
+        }
+    }
+
+    fn load_credentials(&mut self) {
+        if let Some(home_dir) = env::home_dir() {
+            let cache_dir = home_dir.join(".cache");;
+            let config_filename = cache_dir.join("maruska.toml");
+            if let Ok(mut store_file) = fs::File::open(&config_filename) {
+                let store_obj = store::load(&mut store_file).unwrap_or_else(|_| BTreeMap::new());
+                debug!("{:?}", store_obj);
+                let url = self.client.get_url();
+                if let Some(host) = store_obj.get(&url) {
+                    if let Some(val) = host.lookup("username").and_then(|x| x.as_str()) {
+                        self.username = Some(val.to_string());
+                    }
+                    if let Some(val) = host.lookup("password_hash").and_then(|x| x.as_str()) {
+                        self.secret = Some(Secret::PasswordHash(val.to_string()));
+                    } else if let Some(val) = host.lookup("access_key").and_then(|x| x.as_str()) {
+                        self.secret = Some(Secret::AccessKey(val.to_string()));
+                    }
+                }
+            }
+        }
+    }
+
     pub fn handle_event(&mut self, event: RawEvent) -> Result<(), TUIError> {
         match event.etype {
             TB_EVENT_KEY => {
@@ -359,7 +442,7 @@ impl TUI {
                 Ok(())
             },
             TB_EVENT_MOUSE => {
-                warn!("ignoring mouse event");
+                debug!("ignoring mouse event");
                 Ok(())
             },
             _ => {

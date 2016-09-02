@@ -185,6 +185,10 @@ impl CometChannel {
         };
         self.send_packet(packet_contents).map(|_| true)
     }
+
+    pub fn get_url(&self) -> String {
+        self.url.to_string()
+    }
 }
 
 pub fn serve(shared_comet: &CometChannel) -> Vec<thread::JoinHandle<Result<(), CometError>>> {

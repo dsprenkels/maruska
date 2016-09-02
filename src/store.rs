@@ -1,16 +1,17 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::io::{Error as IOError, Read, Write};
 use std::iter::FromIterator;
 
-use rustc_serialize::Encodable;
 use toml::{encode, Parser, ParserError, Value};
 
 
 #[derive(Debug)]
-enum StoreError {
+pub enum StoreError {
     IO(IOError),
     Parser(Vec<ParserError>)
 }
+
+pub type StoreResult<T> = Result<T, StoreError>;
 
 impl From<IOError> for StoreError {
     fn from(err: IOError) -> Self {
@@ -24,29 +25,24 @@ impl From<Vec<ParserError>> for StoreError {
     }
 }
 
-trait Store where Self : Encodable + Sized {
-    fn load<T>(reader: &mut Read) -> Result<T, StoreError>
-        where T : FromIterator<(String, Value)> {
-        let mut s = String::new();
-        try!(reader.read_to_string(&mut s));
-        let mut p = Parser::new(&s);
-        p.parse().map(|x| T::from_iter(x.into_iter()))
-                 .ok_or_else(|| StoreError::from(p.errors.clone())
-        )
-    }
-
-    fn save(self, writer: &mut Write) -> Result<(), IOError> {
-        write!(writer, "{}", encode(&self))
-    }
+pub fn load<F>(reader: &mut F) -> StoreResult<BTreeMap<String, Value>>
+    where F : Read {
+    let mut s = String::new();
+    try!(reader.read_to_string(&mut s));
+    let mut p = Parser::new(&s);
+    p.parse().map(|x| BTreeMap::from_iter(x.into_iter()))
+             .ok_or_else(|| StoreError::from(p.errors.clone())
+    )
 }
 
-impl Store for BTreeMap<String, Value> {}
-impl Store for HashMap<String, Value> {}
+pub fn save<F>(btreemap: BTreeMap<String, Value>, writer: &mut F) -> Result<(), IOError>
+    where F : Write {
+    write!(writer, "{}", encode(&btreemap))
+}
 
 
 #[test]
 fn test() {
-    let input = r#"key = "value""#;
-    BTreeMap::load::<BTreeMap<String, Value>>(&mut input.as_bytes()).unwrap();
-    HashMap::load::<HashMap<String, Value>>(&mut input.as_bytes()).unwrap();
+    let mut input = r#"key = "value""#.as_bytes();
+    load(&mut input).unwrap();
 }

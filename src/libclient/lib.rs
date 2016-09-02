@@ -161,6 +161,10 @@ impl Client {
         }, recv_message_r))
     }
 
+    pub fn get_url(&self) -> String {
+        self.channel.get_url()
+    }
+
     pub fn get_playing(&self) -> &Option<Playing> {
         &self.playing
     }
@@ -357,7 +361,7 @@ impl Client {
         self.do_login_inner(username, access_key, true)
     }
 
-    pub fn do_login_inner(&mut self, username: &str, secret: &str, using_access_key: bool) {
+    fn do_login_inner(&mut self, username: &str, secret: &str, using_access_key: bool) {
         if let Some(ref login_token) = self.login_token {
             self.deferred_login = None;
             let b = make_json_hashmap!(
