@@ -7,6 +7,7 @@ use std::error::Error;
 use std::fmt;
 use std::fs;
 use std::iter::repeat;
+use std::os::unix::fs::OpenOptionsExt;
 use std::thread;
 
 use chan;
@@ -396,7 +397,12 @@ impl TUI {
             if fs::create_dir_all(cache_dir).is_err() {
                 return; // fail silently on IO error
             };
-            if let Ok(mut store_file) = fs::File::create(&config_filename) {
+            let mut open_options = fs::OpenOptions::new();
+            open_options.write(true);
+            open_options.truncate(true);
+            open_options.create(true);
+            open_options.mode(0o600);
+            if let Ok(mut store_file) = open_options.open(&config_filename) {
                 if store::save(store_obj, &mut store_file).is_err() {
                     return; // fail silently on IO error
                 };
