@@ -482,6 +482,7 @@ impl TUI {
             TB_KEY_ENTER => self.handle_input_submit(key),
             TB_KEY_SPACE => self.handle_input_alphanum(' ' as u32),
             TB_KEY_BACKSPACE | TB_KEY_BACKSPACE2 => self.handle_input_backspace(key),
+            TB_KEY_TAB => self.handle_input_tab(key),
             TB_KEY_CTRL_C => Err(TUIError::Quit),
             TB_KEY_CTRL_W => self.handle_input_delword(key),
             TB_KEY_CTRL_U => self.handle_input_nak(key),
@@ -517,6 +518,31 @@ impl TUI {
     fn handle_input_backspace(&mut self, _: u16) -> Result<(), TUIError> {
         self.query.pop();
         self.update_client_query();
+        Ok(())
+    }
+
+    fn handle_input_tab(&mut self, _: u16) -> Result<(), TUIError> {
+        // TODO implement tab completion for search queries
+        if self.query.starts_with(':') {
+            let mut matching_commands: Vec<&str> = COMMANDS.iter()
+                    .filter(|x| x.starts_with(&self.query[1..]))
+                    .map(|x| &x[self.query[1..].len()..])
+                    .collect();
+            loop {
+                let common_firstchar = get_common_first_char(&mut matching_commands);
+                if let Some(ch) = common_firstchar {
+                    self.query.push(ch);
+                    for cmd in matching_commands.iter_mut() {
+                        *cmd = &cmd[1..];
+                    }
+                } else {
+                    break;
+                }
+            }
+            if matching_commands.len() == 1 {
+                self.query.push(' ');
+            }
+        }
         Ok(())
     }
 
@@ -898,4 +924,17 @@ fn fit_columns<'a>(rows: &Vec<Vec<Cow<'a, str>>>, expand_factors: &[f32], fit_wi
         .zip(expand_factors)
         .map(|(w, f)| w + ((expand_units*f).round() as usize))
         .collect()
+}
+
+fn get_common_first_char(strings: &Vec<&str>) -> Option<char> {
+    let mut iter = strings.iter();
+    if let Some(ch) = iter.next().and_then(|x| x.chars().next()) {
+        if iter.all(|x| x.chars().next() == Some(ch)) {
+            Some(ch)
+        } else {
+            None
+        }
+    } else {
+        None
+    }
 }
