@@ -19,7 +19,7 @@ use termbox::*;
 use time::{Duration, get_time};
 use toml;
 
-use libclient::{Client, ClientError, md5, Message, RequestStatus};
+use libclient::old_client::{Client, ClientError, md5, Message, RequestStatus};
 use store;
 
 macro_rules! cleanup {

@@ -1,6 +1,6 @@
 use docopt::Docopt;
 
-use libclient::Client;
+use libclient::old_client::Client;
 
 #[derive(Debug, RustcDecodable)]
 pub struct Args;
